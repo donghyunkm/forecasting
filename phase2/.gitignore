@@ -1,0 +1,18 @@
+# Data files (large, downloaded via script)
+*/data/
+*.npy
+
+# Model checkpoints (large)
+*/checkpoints/
+
+# Generated outputs
+*/outputs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+*/logs/
+*.out
+*.err
