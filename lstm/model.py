@@ -35,6 +35,16 @@ CHECKPOINT_DIR = os.path.join(BASE_DIR, 'checkpoints')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'outputs')
 
 
+def get_checkpoint_dir(num_epochs=NUM_EPOCHS):
+    """Get epoch-specific checkpoint directory."""
+    return os.path.join(BASE_DIR, 'checkpoints', f'epochs_{num_epochs}')
+
+
+def get_output_dir(num_epochs=NUM_EPOCHS):
+    """Get epoch-specific output directory."""
+    return os.path.join(BASE_DIR, 'outputs', f'epochs_{num_epochs}')
+
+
 class LSTMForecaster(nn.Module):
     """
     LSTM-based model for time-series forecasting.
@@ -120,18 +130,20 @@ def evaluate(model, data_loader, criterion, device):
     return total_loss / max(num_batches, 1)
 
 
-def train_single_model(target_idx, device):
+def train_single_model(target_idx, device, num_epochs=NUM_EPOCHS):
     """
     Train a single LSTM model for a target signal.
 
     Args:
         target_idx: Index of target signal (0=ABP, 1=PLETH, 2=II).
         device: torch device.
+        num_epochs: Number of training epochs.
 
     Returns:
         Tuple of (train_losses, val_losses, best_val_loss).
     """
     signal_name = SIGNAL_NAMES[target_idx]
+    checkpoint_dir = get_checkpoint_dir(num_epochs)
     print(f"\n{'=' * 60}")
     print(f"Training model for: {signal_name} (target_idx={target_idx})")
     print(f"Input: all 3 signals ({', '.join(SIGNAL_NAMES)})")
@@ -156,12 +168,12 @@ def train_single_model(target_idx, device):
     val_losses = []
     best_val_loss = float('inf')
 
-    print(f"\n[INFO] Training for {NUM_EPOCHS} epochs...")
+    print(f"\n[INFO] Training for {num_epochs} epochs...")
     print("-" * 50)
     print(f"{'Epoch':>6} | {'Train Loss':>12} | {'Val Loss':>12} | {'Status':>10}")
     print("-" * 50)
 
-    for epoch in range(1, NUM_EPOCHS + 1):
+    for epoch in range(1, num_epochs + 1):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss = evaluate(model, val_loader, criterion, device)
 
@@ -172,9 +184,9 @@ def train_single_model(target_idx, device):
         status = ""
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+            os.makedirs(checkpoint_dir, exist_ok=True)
             checkpoint_path = os.path.join(
-                CHECKPOINT_DIR, f'best_model_{signal_name.lower()}.pt'
+                checkpoint_dir, f'best_model_{signal_name.lower()}.pt'
             )
             torch.save({
                 'epoch': epoch,
@@ -185,6 +197,7 @@ def train_single_model(target_idx, device):
                 'norm_params': norm_params,
                 'target_idx': target_idx,
                 'signal_name': signal_name,
+                'num_epochs': num_epochs,
             }, checkpoint_path)
             status = "* best *"
 
@@ -192,7 +205,7 @@ def train_single_model(target_idx, device):
 
     print("-" * 50)
     print(f"[INFO] Best val loss for {signal_name}: {best_val_loss:.6f}")
-    print(f"[SAVED] {os.path.join(CHECKPOINT_DIR, f'best_model_{signal_name.lower()}.pt')}")
+    print(f"[SAVED] {os.path.join(checkpoint_dir, f'best_model_{signal_name.lower()}.pt')}")
 
     return train_losses, val_losses, best_val_loss
 
@@ -225,14 +238,23 @@ def plot_training_curves(all_train_losses, all_val_losses, output_dir):
     print(f"[SAVED] Training curves: {filepath}")
 
 
-def main():
-    """Train all 3 LSTM models (one per signal)."""
+def main(num_epochs=None):
+    """Train all 3 LSTM models (one per signal).
+    
+    Args:
+        num_epochs: Override default NUM_EPOCHS if provided.
+    """
+    epochs = num_epochs if num_epochs is not None else NUM_EPOCHS
+    checkpoint_dir = get_checkpoint_dir(epochs)
+    output_dir = get_output_dir(epochs)
+
     print("=" * 60)
     print("MIMIC-III Waveform Forecasting — Multi-Signal LSTM Training")
     print("=" * 60)
     print(f"Signals: {SIGNAL_NAMES}")
     print(f"Architecture: 3 separate LSTMs, input_size={INPUT_SIZE}")
     print(f"Each model uses all 3 signals as input, predicts 1 target signal")
+    print(f"Epochs: {epochs}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"[INFO] Device: {device}")
@@ -242,13 +264,13 @@ def main():
     all_best_val = []
 
     for target_idx in range(NUM_SIGNALS):
-        train_losses, val_losses, best_val = train_single_model(target_idx, device)
+        train_losses, val_losses, best_val = train_single_model(target_idx, device, epochs)
         all_train_losses.append(train_losses)
         all_val_losses.append(val_losses)
         all_best_val.append(best_val)
 
     # Plot all training curves
-    plot_training_curves(all_train_losses, all_val_losses, OUTPUT_DIR)
+    plot_training_curves(all_train_losses, all_val_losses, output_dir)
 
     # Summary
     print("\n" + "=" * 60)
@@ -257,10 +279,15 @@ def main():
     for i, name in enumerate(SIGNAL_NAMES):
         print(f"  {name:>5}: best_val_loss = {all_best_val[i]:.6f} "
               f"| final_train = {all_train_losses[i][-1]:.6f}")
-    print(f"\n  Checkpoints: {CHECKPOINT_DIR}/best_model_{{signal}}.pt")
-    print(f"  Training plot: {OUTPUT_DIR}/training_curves.png")
+    print(f"\n  Checkpoints: {checkpoint_dir}/best_model_{{signal}}.pt")
+    print(f"  Training plot: {output_dir}/training_curves.png")
     print("=" * 60)
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description='Train LSTM models for waveform forecasting')
+    parser.add_argument('--epochs', type=int, default=NUM_EPOCHS,
+                        help=f'Number of training epochs (default: {NUM_EPOCHS})')
+    args = parser.parse_args()
+    main(num_epochs=args.epochs)

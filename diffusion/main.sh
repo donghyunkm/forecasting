@@ -27,14 +27,14 @@ echo "Python: $(python --version)"
 echo "Start time: $(date)"
 echo "============================================"
 
-# Train diffusion models for 200 epochs
-python model.py --epochs 200
+# Train diffusion models for 20 epochs
+python -u model.py --epochs 20
 
 # Test with best checkpoints
-python test.py
+python -u test.py --epochs 20
 
 # Generate plots
-python plot_predictions.py
+python -u plot_predictions.py --epochs 20
 
 echo "============================================"
 echo "End time: $(date)"

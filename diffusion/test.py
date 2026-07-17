@@ -16,26 +16,28 @@ import torch
 
 from preprocess import create_dataloaders, FORECAST_HORIZON, NUM_SIGNALS, SIGNAL_NAMES
 from model import (ConditionalDenoiser, get_beta_schedule, get_diffusion_params,
-                   sample, CHECKPOINT_DIR, OUTPUT_DIR, NUM_TIMESTEPS,
-                   BETA_START, BETA_END)
+                   sample, get_checkpoint_dir, get_output_dir, NUM_TIMESTEPS,
+                   NUM_EPOCHS, BETA_START, BETA_END)
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def test_single_model(target_idx, device):
+def test_single_model(target_idx, device, num_epochs=NUM_EPOCHS):
     """
     Load best checkpoint for a signal, generate forecasts via reverse diffusion.
 
     Args:
         target_idx: Index of target signal (0=ABP, 1=PLETH, 2=II).
         device: torch device.
+        num_epochs: Number of epochs used during training (for directory lookup).
 
     Returns:
         Tuple of (metrics_dict, predictions_original_scale, targets_original_scale).
     """
     signal_name = SIGNAL_NAMES[target_idx]
-    checkpoint_path = os.path.join(CHECKPOINT_DIR, f'best_model_{signal_name.lower()}.pt')
+    checkpoint_dir = get_checkpoint_dir(num_epochs)
+    checkpoint_path = os.path.join(checkpoint_dir, f'best_model_{signal_name.lower()}.pt')
 
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(
@@ -130,31 +132,36 @@ def test_single_model(target_idx, device):
     return metrics, predictions_raw, targets_raw
 
 
-def run_test():
-    """Test all 3 models and save results."""
+def run_test(num_epochs=NUM_EPOCHS):
+    """Test all 3 models and save results.
+    
+    Args:
+        num_epochs: Number of epochs used during training (for directory lookup).
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"[INFO] Using device: {device}")
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_dir = get_output_dir(num_epochs)
+    os.makedirs(output_dir, exist_ok=True)
 
     all_metrics = {}
 
     for target_idx in range(NUM_SIGNALS):
         signal_name = SIGNAL_NAMES[target_idx]
 
-        metrics, predictions, targets = test_single_model(target_idx, device)
+        metrics, predictions, targets = test_single_model(target_idx, device, num_epochs)
         all_metrics[signal_name] = metrics
 
         # Save predictions and targets per signal
-        pred_path = os.path.join(OUTPUT_DIR, f'test_predictions_{signal_name.lower()}.npy')
-        tgt_path = os.path.join(OUTPUT_DIR, f'test_targets_{signal_name.lower()}.npy')
+        pred_path = os.path.join(output_dir, f'test_predictions_{signal_name.lower()}.npy')
+        tgt_path = os.path.join(output_dir, f'test_targets_{signal_name.lower()}.npy')
         np.save(pred_path, predictions)
         np.save(tgt_path, targets)
         print(f"[SAVED] {pred_path}")
         print(f"[SAVED] {tgt_path}")
 
     # Save combined metrics
-    metrics_path = os.path.join(OUTPUT_DIR, 'test_metrics.json')
+    metrics_path = os.path.join(output_dir, 'test_metrics.json')
     with open(metrics_path, 'w') as f:
         json.dump(all_metrics, f, indent=2)
     print(f"\n[SAVED] {metrics_path}")
@@ -181,4 +188,9 @@ def run_test():
 
 
 if __name__ == '__main__':
-    run_test()
+    import argparse
+    parser = argparse.ArgumentParser(description='Test diffusion models for waveform forecasting')
+    parser.add_argument('--epochs', type=int, default=NUM_EPOCHS,
+                        help=f'Number of epochs used during training (default: {NUM_EPOCHS})')
+    args = parser.parse_args()
+    run_test(num_epochs=args.epochs)

@@ -16,8 +16,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+from model import get_output_dir, NUM_EPOCHS
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, 'outputs')
 SAMPLING_RATE = 125
 FORECAST_HORIZON = 25
 SIGNAL_NAMES = ['ABP', 'PLETH', 'II']
@@ -27,13 +28,13 @@ SIGNAL_COLORS = {'ABP': ('tab:blue', 'tab:red'),
                  'II': ('tab:purple', 'tab:brown')}
 
 
-def load_data():
+def load_data(output_dir):
     """Load saved predictions and targets for all signals."""
     data = {}
 
     for name in SIGNAL_NAMES:
-        pred_path = os.path.join(OUTPUT_DIR, f'test_predictions_{name.lower()}.npy')
-        tgt_path = os.path.join(OUTPUT_DIR, f'test_targets_{name.lower()}.npy')
+        pred_path = os.path.join(output_dir, f'test_predictions_{name.lower()}.npy')
+        tgt_path = os.path.join(output_dir, f'test_targets_{name.lower()}.npy')
 
         if not os.path.exists(pred_path) or not os.path.exists(tgt_path):
             raise FileNotFoundError(
@@ -46,7 +47,7 @@ def load_data():
         data[name] = {'predictions': predictions, 'targets': targets}
         print(f"[LOADED] {name}: predictions {predictions.shape}, targets {targets.shape}")
 
-    metrics_path = os.path.join(OUTPUT_DIR, 'test_metrics.json')
+    metrics_path = os.path.join(output_dir, 'test_metrics.json')
     metrics = None
     if os.path.exists(metrics_path):
         with open(metrics_path, 'r') as f:
@@ -55,7 +56,7 @@ def load_data():
     return data, metrics
 
 
-def plot_overlay_samples(data, metrics, num_samples=4):
+def plot_overlay_samples(data, metrics, output_dir, num_samples=4):
     """Plot individual forecast windows for all 3 signals."""
     time_ms = np.arange(FORECAST_HORIZON) / SAMPLING_RATE * 1000
 
@@ -94,13 +95,13 @@ def plot_overlay_samples(data, metrics, num_samples=4):
                  fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
 
-    filepath = os.path.join(OUTPUT_DIR, 'plot_overlay_samples.png')
+    filepath = os.path.join(output_dir, 'plot_overlay_samples.png')
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"[SAVED] {filepath}")
 
 
-def plot_continuous_waveform(data, metrics, num_windows=30):
+def plot_continuous_waveform(data, metrics, output_dir, num_windows=30):
     """Concatenate consecutive predictions to show longer waveforms."""
     fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
 
@@ -133,13 +134,13 @@ def plot_continuous_waveform(data, metrics, num_windows=30):
                  fontsize=13, fontweight='bold', y=1.01)
     plt.tight_layout()
 
-    filepath = os.path.join(OUTPUT_DIR, 'plot_continuous_waveform.png')
+    filepath = os.path.join(output_dir, 'plot_continuous_waveform.png')
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"[SAVED] {filepath}")
 
 
-def plot_error_analysis(data, metrics):
+def plot_error_analysis(data, metrics, output_dir):
     """MAE per forecast step for all signals."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
     step_time_ms = (np.arange(1, FORECAST_HORIZON + 1)) / SAMPLING_RATE * 1000
@@ -165,13 +166,13 @@ def plot_error_analysis(data, metrics):
                  fontsize=13, fontweight='bold', y=1.02)
     plt.tight_layout()
 
-    filepath = os.path.join(OUTPUT_DIR, 'plot_error_analysis.png')
+    filepath = os.path.join(output_dir, 'plot_error_analysis.png')
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"[SAVED] {filepath}")
 
 
-def plot_scatter(data, metrics):
+def plot_scatter(data, metrics, output_dir):
     """Scatter plot of predicted vs actual for all signals."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     rng = np.random.default_rng(42)
@@ -215,18 +216,26 @@ def plot_scatter(data, metrics):
                  fontsize=13, fontweight='bold', y=1.02)
     plt.tight_layout()
 
-    filepath = os.path.join(OUTPUT_DIR, 'plot_scatter.png')
+    filepath = os.path.join(output_dir, 'plot_scatter.png')
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"[SAVED] {filepath}")
 
 
-def main():
+def main(num_epochs=None):
+    """Generate all plots for a specific epoch run.
+    
+    Args:
+        num_epochs: Number of epochs used during training (for directory lookup).
+    """
+    epochs = num_epochs if num_epochs is not None else NUM_EPOCHS
+    output_dir = get_output_dir(epochs)
+
     print("=" * 60)
     print("Plotting Diffusion Predictions — All 3 Signals")
     print("=" * 60)
 
-    data, metrics = load_data()
+    data, metrics = load_data(output_dir)
 
     if metrics:
         print("\n[INFO] Test metrics summary:")
@@ -236,13 +245,13 @@ def main():
 
     print("\n[INFO] Generating plots...")
 
-    plot_overlay_samples(data, metrics, num_samples=4)
-    plot_continuous_waveform(data, metrics, num_windows=30)
-    plot_error_analysis(data, metrics)
-    plot_scatter(data, metrics)
+    plot_overlay_samples(data, metrics, output_dir, num_samples=4)
+    plot_continuous_waveform(data, metrics, output_dir, num_windows=30)
+    plot_error_analysis(data, metrics, output_dir)
+    plot_scatter(data, metrics, output_dir)
 
     print("\n" + "=" * 60)
-    print("All plots saved to: " + OUTPUT_DIR)
+    print("All plots saved to: " + output_dir)
     print("=" * 60)
     print("  - plot_overlay_samples.png     : Individual windows (3 signals x 4 samples)")
     print("  - plot_continuous_waveform.png  : Concatenated continuous signal")
@@ -252,4 +261,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description='Plot diffusion model predictions')
+    parser.add_argument('--epochs', type=int, default=NUM_EPOCHS,
+                        help=f'Number of epochs used during training (default: {NUM_EPOCHS})')
+    args = parser.parse_args()
+    main(num_epochs=args.epochs)

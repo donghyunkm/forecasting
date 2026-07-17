@@ -9,12 +9,14 @@ Runs the full pipeline:
     4. Plot predictions vs ground truth
 
 Usage:
-    python run_pipeline.py
+    python run_pipeline.py               # Default 20 epochs
+    python run_pipeline.py --epochs 200  # Custom epoch count
 """
 
 import os
 import sys
 import time
+import argparse
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -46,15 +48,15 @@ def run_download():
         return False
 
 
-def run_training():
+def run_training(num_epochs):
     """Train all 3 DDPM models."""
     print("\n" + "=" * 60)
-    print("STEP 2: Diffusion Model Training (3 signals)")
+    print(f"STEP 2: Diffusion Model Training (3 signals, {num_epochs} epochs)")
     print("=" * 60)
 
     try:
         import model as model_module
-        model_module.main()
+        model_module.main(num_epochs=num_epochs)
         print("[SUCCESS] All DDPM models trained.")
         return True
     except Exception as e:
@@ -62,7 +64,7 @@ def run_training():
         return False
 
 
-def run_testing():
+def run_testing(num_epochs):
     """Test all 3 models with saved checkpoints."""
     print("\n" + "=" * 60)
     print("STEP 3: Testing (reverse diffusion with best checkpoints)")
@@ -70,7 +72,7 @@ def run_testing():
 
     try:
         import test as test_module
-        test_module.run_test()
+        test_module.run_test(num_epochs=num_epochs)
         print("[SUCCESS] Testing complete.")
         return True
     except Exception as e:
@@ -78,7 +80,7 @@ def run_testing():
         return False
 
 
-def run_plotting():
+def run_plotting(num_epochs):
     """Generate prediction plots."""
     print("\n" + "=" * 60)
     print("STEP 4: Plotting")
@@ -86,7 +88,7 @@ def run_plotting():
 
     try:
         import plot_predictions
-        plot_predictions.main()
+        plot_predictions.main(num_epochs=num_epochs)
         print("[SUCCESS] Plots generated.")
         return True
     except Exception as e:
@@ -96,12 +98,19 @@ def run_plotting():
 
 def main():
     """Run the full diffusion forecasting pipeline."""
+    parser = argparse.ArgumentParser(description='Run full diffusion forecasting pipeline')
+    parser.add_argument('--epochs', type=int, default=20,
+                        help='Number of training epochs (default: 20)')
+    args = parser.parse_args()
+    num_epochs = args.epochs
+
     print("=" * 60)
     print("MIMIC-III Waveform Forecasting — Diffusion (DDPM) Pipeline")
     print("=" * 60)
     print(f"Working directory: {BASE_DIR}")
     print(f"Signals: ABP, PLETH, II")
     print(f"Architecture: 3 separate conditional DDPMs")
+    print(f"Epochs: {num_epochs}")
 
     start_time = time.time()
 
@@ -111,31 +120,36 @@ def main():
         sys.exit(1)
 
     # Step 2: Train
-    if not run_training():
+    if not run_training(num_epochs):
         print("\n[FATAL] Pipeline aborted at training step.")
         sys.exit(1)
 
     # Step 3: Test
-    if not run_testing():
+    if not run_testing(num_epochs):
         print("\n[FATAL] Pipeline aborted at testing step.")
         sys.exit(1)
 
     # Step 4: Plot
-    if not run_plotting():
+    if not run_plotting(num_epochs):
         print("\n[WARNING] Plotting failed but training/testing succeeded.")
 
     # Summary
+    from model import get_checkpoint_dir, get_output_dir
+    checkpoint_dir = get_checkpoint_dir(num_epochs)
+    output_dir = get_output_dir(num_epochs)
+
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)
     print("PIPELINE COMPLETE")
     print("=" * 60)
+    print(f"  Epochs:           {num_epochs}")
     print(f"  Total time:       {elapsed:.1f}s")
     print(f"  Data:             {DATA_DIR}/")
-    print(f"  Checkpoints:      {os.path.join(BASE_DIR, 'checkpoints')}/best_model_{{signal}}.pt")
-    print(f"  Test predictions: {os.path.join(BASE_DIR, 'outputs')}/test_predictions_{{signal}}.npy")
-    print(f"  Test targets:     {os.path.join(BASE_DIR, 'outputs')}/test_targets_{{signal}}.npy")
-    print(f"  Metrics:          {os.path.join(BASE_DIR, 'outputs')}/test_metrics.json")
-    print(f"  Plots:            {os.path.join(BASE_DIR, 'outputs')}/plot_*.png")
+    print(f"  Checkpoints:      {checkpoint_dir}/best_model_{{signal}}.pt")
+    print(f"  Test predictions: {output_dir}/test_predictions_{{signal}}.npy")
+    print(f"  Test targets:     {output_dir}/test_targets_{{signal}}.npy")
+    print(f"  Metrics:          {output_dir}/test_metrics.json")
+    print(f"  Plots:            {output_dir}/plot_*.png")
     print("=" * 60)
 
 

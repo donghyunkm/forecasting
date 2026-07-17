@@ -39,6 +39,16 @@ CHECKPOINT_DIR = os.path.join(BASE_DIR, 'checkpoints')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'outputs')
 
 
+def get_checkpoint_dir(num_epochs=NUM_EPOCHS):
+    """Get epoch-specific checkpoint directory."""
+    return os.path.join(BASE_DIR, 'checkpoints', f'epochs_{num_epochs}')
+
+
+def get_output_dir(num_epochs=NUM_EPOCHS):
+    """Get epoch-specific output directory."""
+    return os.path.join(BASE_DIR, 'outputs', f'epochs_{num_epochs}')
+
+
 # ============================================================
 # Diffusion Schedule
 # ============================================================
@@ -207,17 +217,35 @@ def p_sample(model, x_t, t, diffusion_params, condition):
     betas = diffusion_params['betas']
     sqrt_recip_alphas = diffusion_params['sqrt_recip_alphas']
     sqrt_one_minus = diffusion_params['sqrt_one_minus_alphas_cumprod']
+    sqrt_alphas_cumprod = diffusion_params['sqrt_alphas_cumprod']
     posterior_var = diffusion_params['posterior_variance']
 
     # Predict noise
     noise_pred = model(x_t, t, condition)
 
-    # Compute x_{t-1}
+    # Compute x_{t-1} using the standard DDPM formula
     beta_t = betas[t][:, None]
     sqrt_recip_alpha_t = sqrt_recip_alphas[t][:, None]
     sqrt_one_minus_t = sqrt_one_minus[t][:, None]
+    sqrt_alpha_cumprod_t = sqrt_alphas_cumprod[t][:, None]
 
-    model_mean = sqrt_recip_alpha_t * (x_t - beta_t * noise_pred / sqrt_one_minus_t)
+    # Predict x_0 from x_t and predicted noise, then clip to prevent explosion
+    # x_0 = (x_t - sqrt(1-alpha_bar_t) * noise_pred) / sqrt(alpha_bar_t)
+    pred_x0 = (x_t - sqrt_one_minus_t * noise_pred) / sqrt_alpha_cumprod_t
+    pred_x0 = torch.clamp(pred_x0, -6.0, 6.0)  # Clip to ~6 std deviations (normalized data)
+
+    # Recompute model mean from clipped x_0
+    # mu_t = sqrt(alpha_bar_{t-1}) * beta_t / (1-alpha_bar_t) * x_0
+    #       + sqrt(alpha_t) * (1-alpha_bar_{t-1}) / (1-alpha_bar_t) * x_t
+    alphas_cumprod = diffusion_params['alphas_cumprod']
+    alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
+    alpha_cumprod_t = alphas_cumprod[t][:, None]
+    alpha_cumprod_prev_t = alphas_cumprod_prev[t][:, None]
+
+    model_mean = (
+        torch.sqrt(alpha_cumprod_prev_t) * beta_t / (1.0 - alpha_cumprod_t) * pred_x0
+        + torch.sqrt(1.0 - beta_t) * (1.0 - alpha_cumprod_prev_t) / (1.0 - alpha_cumprod_t) * x_t
+    )
 
     if t[0] == 0:
         return model_mean
@@ -280,6 +308,7 @@ def train_one_epoch(model, train_loader, optimizer, diffusion_params, device):
 
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         total_loss += loss.item()
@@ -325,6 +354,7 @@ def train_single_model(target_idx, device, num_epochs=NUM_EPOCHS):
         Tuple of (train_losses, val_losses, best_val_loss).
     """
     signal_name = SIGNAL_NAMES[target_idx]
+    checkpoint_dir = get_checkpoint_dir(num_epochs)
     print(f"\n{'=' * 60}")
     print(f"Training DDPM for: {signal_name} (target_idx={target_idx})")
     print(f"Condition: all 3 signals ({', '.join(SIGNAL_NAMES)})")
@@ -370,9 +400,9 @@ def train_single_model(target_idx, device, num_epochs=NUM_EPOCHS):
         status = ""
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+            os.makedirs(checkpoint_dir, exist_ok=True)
             checkpoint_path = os.path.join(
-                CHECKPOINT_DIR, f'best_model_{signal_name.lower()}.pt'
+                checkpoint_dir, f'best_model_{signal_name.lower()}.pt'
             )
             torch.save({
                 'epoch': epoch,
@@ -386,6 +416,7 @@ def train_single_model(target_idx, device, num_epochs=NUM_EPOCHS):
                 'num_timesteps': NUM_TIMESTEPS,
                 'beta_start': BETA_START,
                 'beta_end': BETA_END,
+                'num_epochs': num_epochs,
             }, checkpoint_path)
             status = "* best *"
 
@@ -393,7 +424,7 @@ def train_single_model(target_idx, device, num_epochs=NUM_EPOCHS):
 
     print("-" * 50)
     print(f"[INFO] Best val loss for {signal_name}: {best_val_loss:.6f}")
-    print(f"[SAVED] {os.path.join(CHECKPOINT_DIR, f'best_model_{signal_name.lower()}.pt')}")
+    print(f"[SAVED] {os.path.join(checkpoint_dir, f'best_model_{signal_name.lower()}.pt')}")
 
     return train_losses, val_losses, best_val_loss
 
@@ -457,17 +488,19 @@ def main(num_epochs=None):
         all_best_val.append(best_val)
 
     # Plot training curves
-    plot_training_curves(all_train_losses, all_val_losses, OUTPUT_DIR)
+    output_dir = get_output_dir(epochs)
+    plot_training_curves(all_train_losses, all_val_losses, output_dir)
 
     # Summary
+    checkpoint_dir = get_checkpoint_dir(epochs)
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE — All DDPM Models")
     print("=" * 60)
     for i, name in enumerate(SIGNAL_NAMES):
         print(f"  {name:>5}: best_val_loss = {all_best_val[i]:.6f} "
               f"| final_train = {all_train_losses[i][-1]:.6f}")
-    print(f"\n  Checkpoints: {CHECKPOINT_DIR}/best_model_{{signal}}.pt")
-    print(f"  Training plot: {OUTPUT_DIR}/training_curves.png")
+    print(f"\n  Checkpoints: {checkpoint_dir}/best_model_{{signal}}.pt")
+    print(f"  Training plot: {output_dir}/training_curves.png")
     print("=" * 60)
 
 

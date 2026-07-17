@@ -94,7 +94,9 @@ sbatch diffusion/main.sh   # Submits 200-epoch training on L40S GPU
 - **Normalization:** Z-score per signal
 - **Checkpoint selection:** Best model saved at minimum validation loss
 
-## Results (20 epochs)
+## Results
+
+### 20 Epochs
 
 | Signal | LSTM MAE | LSTM RMSE | Diffusion MAE | Diffusion RMSE |
 |--------|----------|-----------|---------------|----------------|
@@ -102,7 +104,32 @@ sbatch diffusion/main.sh   # Submits 200-epoch training on L40S GPU
 | PLETH  | 0.054    | 0.110     | 0.129         | 0.334          |
 | II     | 0.019 mV | 0.038 mV | 0.035 mV | 0.073 mV |
 
-The LSTM outperforms at 20 epochs. Diffusion models typically require more training (100–200+ epochs) and benefit from cosine noise schedules and DDIM sampling.
+### 200 Epochs (Diffusion)
+
+| Signal | Diffusion MAE (20 ep) | Diffusion MAE (200 ep) | Diffusion RMSE (200 ep) | Improvement |
+|--------|-----------------------|------------------------|-------------------------|-------------|
+| ABP    | 3.88 mmHg             | 2.68 mmHg              | 15.75 mmHg              | 31%         |
+| PLETH  | 0.129                 | 0.125                  | 0.613                   | 3%          |
+| II     | 0.035 mV              | 0.022 mV              | 0.047 mV               | 37%         |
+
+Best checkpoints selected at minimum validation loss (ABP: epoch 117, PLETH: epoch 157, II: epoch 140).
+
+### Summary
+
+The LSTM remains the strongest model overall, but the diffusion model improves substantially with more training — ABP and II show 31–37% MAE reduction from 20 to 200 epochs. Diffusion models benefit from longer training and stable sampling (predicted x₀ clipping during reverse diffusion).
+
+### Diffusion Sampling Stability Fix
+
+The standard DDPM reverse process (`p_sample`) is numerically unstable without output clipping. With a well-trained model (200 epochs), the denoiser produces sharper noise predictions that, when divided by the small `sqrt(alpha_bar_t)` at high timesteps, amplify errors exponentially across the 200 denoising steps — causing predictions to diverge to infinity.
+
+**Symptoms:** MAE of 10^17+ (effectively infinity/NaN) despite good training loss.
+
+**Fix applied in `diffusion/model.py`:**
+1. **Predict x₀ clipping** — During each reverse step, explicitly compute the predicted clean signal x₀ and clip it to ±6 standard deviations (matching z-normalized data range)
+2. **Recompute posterior mean from clipped x₀** — Use the proper DDPM posterior formula rather than the simplified one-step formula
+3. **Gradient clipping during training** — Added `clip_grad_norm_(max_norm=1.0)` to prevent the loss spikes observed at epochs 122, 162, 153
+
+This is standard practice in DDPM implementations (analogous to Ho et al. clipping to [-1, 1] for images). Without it, a weaker model (20 epochs) stays stable by accident, but a stronger model (200 epochs) explodes during sampling.
 
 ## Outputs Generated
 
