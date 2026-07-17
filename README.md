@@ -24,6 +24,7 @@ forecasting/
 │   ├── test.py              # Evaluate with best checkpoint
 │   ├── plot_predictions.py  # Visualize predictions vs ground truth
 │   ├── run_pipeline.py      # End-to-end orchestrator
+│   ├── main.sh              # SLURM sbatch script (L40S GPU)
 │   └── requirements.txt
 ├── diffusion/               # Diffusion model
 │   ├── download_data.py     # Download waveforms from PhysioNet
@@ -90,9 +91,33 @@ sbatch diffusion/main.sh   # Submits 200-epoch training on L40S GPU
 
 - **Input:** 125 time steps × 3 signals (1 second of ABP + PLETH + II)
 - **Output:** 25 time steps of 1 target signal (0.2 second forecast)
-- **Split:** 70% train / 15% validation / 15% test
-- **Normalization:** Z-score per signal
+- **Normalization:** Z-score per signal (statistics from training data only)
 - **Checkpoint selection:** Best model saved at minimum validation loss
+
+## Preprocessing & Data Split
+
+### Contiguous Temporal Split (No Data Leakage)
+
+Each patient's time series is split **chronologically** before sliding window creation:
+
+| Block | Samples per patient | Purpose |
+|-------|-------------------|---------|
+| First 70% | 52,500 | Training |
+| Next 15% | 11,250 | Validation |
+| Last 15% | 11,250 | Test |
+
+Sliding windows (stride=1) are created **independently within each block**, then concatenated across patients:
+
+| Split | Windows per patient | Total (2 patients) |
+|-------|-------------------|-------------------|
+| Train | 52,351 | 104,702 |
+| Val | 11,101 | 22,202 |
+| Test | 11,101 | 22,202 |
+
+### Data Leakage Prevention
+
+1. **Temporal isolation** — The raw time series is partitioned into contiguous blocks before any windowing. No sliding window can span across split boundaries, ensuring zero sample overlap between train/val/test.
+2. **Normalization isolation** — Z-score mean and std are computed from training blocks only, then applied to val/test. No future information leaks through statistics.
 
 ## Results
 
@@ -100,23 +125,23 @@ sbatch diffusion/main.sh   # Submits 200-epoch training on L40S GPU
 
 | Signal | LSTM MAE | LSTM RMSE | Diffusion MAE | Diffusion RMSE |
 |--------|----------|-----------|---------------|----------------|
-| ABP    | 1.46 mmHg | 4.37 mmHg | 3.88 mmHg | 14.26 mmHg |
-| PLETH  | 0.054    | 0.110     | 0.129         | 0.334          |
-| II     | 0.019 mV | 0.038 mV | 0.035 mV | 0.073 mV |
+| ABP    | 2.44 mmHg | 4.15 mmHg | 3.30 mmHg | 10.09 mmHg |
+| PLETH  | 0.078    | 0.151     | 0.128         | 0.291          |
+| II     | 0.022 mV | 0.046 mV | 0.036 mV | 0.076 mV |
 
-### 200 Epochs (Diffusion)
+### 100 Epochs (Diffusion)
 
-| Signal | Diffusion MAE (20 ep) | Diffusion MAE (200 ep) | Diffusion RMSE (200 ep) | Improvement |
+| Signal | Diffusion MAE (20 ep) | Diffusion MAE (100 ep) | Diffusion RMSE (100 ep) | Improvement |
 |--------|-----------------------|------------------------|-------------------------|-------------|
-| ABP    | 3.88 mmHg             | 2.68 mmHg              | 15.75 mmHg              | 31%         |
-| PLETH  | 0.129                 | 0.125                  | 0.613                   | 3%          |
-| II     | 0.035 mV              | 0.022 mV              | 0.047 mV               | 37%         |
+| ABP    | 3.30 mmHg             | 3.21 mmHg              | 10.79 mmHg              | 3%          |
+| PLETH  | 0.128                 | 0.130                  | 0.285                   | -2%         |
+| II     | 0.036 mV              | 0.033 mV              | 0.067 mV               | 8%          |
 
-Best checkpoints selected at minimum validation loss (ABP: epoch 117, PLETH: epoch 157, II: epoch 140).
+Best checkpoints selected at minimum validation loss (ABP: epoch 46, PLETH: epoch 71, II: epoch 29).
 
 ### Summary
 
-The LSTM remains the strongest model overall, but the diffusion model improves substantially with more training — ABP and II show 31–37% MAE reduction from 20 to 200 epochs. Diffusion models benefit from longer training and stable sampling (predicted x₀ clipping during reverse diffusion).
+The LSTM remains the strongest model overall. The diffusion model shows modest improvement from 20 to 100 epochs, with ABP and II showing 3–8% MAE reduction. Diffusion models benefit from longer training and stable sampling (predicted x₀ clipping during reverse diffusion).
 
 ### Diffusion Sampling Stability Fix
 

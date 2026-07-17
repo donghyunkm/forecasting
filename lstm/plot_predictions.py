@@ -108,8 +108,11 @@ def plot_overlay_samples(data, metrics, output_dir, num_samples=4):
 
 def plot_continuous_waveform(data, metrics, output_dir, num_windows=30):
     """
-    Concatenate consecutive predictions to show longer waveforms.
-    One subplot per signal.
+    Concatenate non-overlapping predictions to show longer waveforms.
+    
+    Since test windows have stride=1, consecutive windows overlap by 24/25 samples.
+    We select every FORECAST_HORIZON-th window (every 25th) so predictions tile
+    without overlap, producing an honest continuous waveform.
     """
     fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
 
@@ -119,9 +122,12 @@ def plot_continuous_waveform(data, metrics, output_dir, num_windows=30):
         gt_color, pred_color = SIGNAL_COLORS[signal_name]
         unit = SIGNAL_UNITS[signal_name]
 
-        n = min(num_windows, len(predictions))
-        pred_concat = predictions[:n].flatten()
-        tgt_concat = targets[:n].flatten()
+        # Select non-overlapping windows (every 25th)
+        non_overlap = predictions[::FORECAST_HORIZON]
+        non_overlap_tgt = targets[::FORECAST_HORIZON]
+        n = min(num_windows, len(non_overlap))
+        pred_concat = non_overlap[:n].flatten()
+        tgt_concat = non_overlap_tgt[:n].flatten()
         time_s = np.arange(len(pred_concat)) / SAMPLING_RATE
 
         ax = axes[i]
@@ -138,7 +144,7 @@ def plot_continuous_waveform(data, metrics, output_dir, num_windows=30):
         ax.grid(True, alpha=0.3, linestyle='--')
 
     axes[-1].set_xlabel('Time (s)', fontsize=11)
-    plt.suptitle(f'Continuous Waveform — {num_windows} Forecast Windows',
+    plt.suptitle(f'LSTM Model — Continuous Waveform ({num_windows} non-overlapping windows)',
                  fontsize=13, fontweight='bold', y=1.01)
     plt.tight_layout()
 

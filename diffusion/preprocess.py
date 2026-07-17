@@ -6,6 +6,11 @@ Loads raw .npy waveform data, applies z-score normalization, and creates
 sliding window datasets. Each dataset uses all 3 signals (ABP, PLETH, II)
 as input and targets a single signal for forecasting.
 
+DATA LEAKAGE PREVENTION:
+- The raw time series is split into contiguous train/val/test blocks BEFORE
+  creating sliding windows. This ensures no temporal overlap between splits.
+- Normalization statistics are computed from training data only.
+
 Usage:
     python preprocess.py          # Print dataset statistics
     import preprocess             # Use as module in pipeline
@@ -15,7 +20,7 @@ import os
 import json
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 
 
 # Configuration
@@ -112,18 +117,173 @@ def load_raw_data():
     return all_data, metadata
 
 
-def normalize_zscore(data):
-    """Apply z-score normalization per signal (column)."""
-    means = np.mean(data, axis=0)
-    stds = np.std(data, axis=0)
+def split_contiguous(data, train_ratio=TRAIN_RATIO, val_ratio=VAL_RATIO):
+    """
+    Split a contiguous time series into train/val/test blocks by time.
+
+    The split is done chronologically:
+        - First train_ratio of samples → train
+        - Next val_ratio of samples → validation
+        - Remaining samples → test
+
+    Args:
+        data: numpy array of shape (num_samples, num_signals).
+        train_ratio: Fraction for training.
+        val_ratio: Fraction for validation.
+
+    Returns:
+        Tuple of (train_data, val_data, test_data) numpy arrays.
+    """
+    n = len(data)
+    train_end = int(n * train_ratio)
+    val_end = int(n * (train_ratio + val_ratio))
+
+    train_data = data[:train_end]
+    val_data = data[train_end:val_end]
+    test_data = data[val_end:]
+
+    return train_data, val_data, test_data
+
+
+def normalize_zscore(train_data, val_data, test_data):
+    """
+    Apply z-score normalization using training data statistics only.
+
+    This prevents information leakage from val/test into normalization.
+
+    Args:
+        train_data: numpy array (train samples, num_signals).
+        val_data: numpy array (val samples, num_signals).
+        test_data: numpy array (test samples, num_signals).
+
+    Returns:
+        Tuple of (norm_train, norm_val, norm_test, means, stds).
+    """
+    means = np.mean(train_data, axis=0)
+    stds = np.std(train_data, axis=0)
     stds[stds == 0] = 1.0
-    normalized = (data - means) / stds
-    return normalized, means, stds
+
+    norm_train = (train_data - means) / stds
+    norm_val = (val_data - means) / stds
+    norm_test = (test_data - means) / stds
+
+    return norm_train, norm_val, norm_test, means, stds
+
+
+def create_dataloaders(target_idx, batch_size=BATCH_SIZE, train_ratio=TRAIN_RATIO,
+                       val_ratio=VAL_RATIO, test_ratio=TEST_RATIO):
+    """
+    Create train, validation, and test DataLoaders for a target signal.
+
+    The pipeline:
+        1. Load raw data (per patient)
+        2. Split each patient's data into contiguous train/val/test blocks
+        3. Compute normalization stats from training blocks only
+        4. Normalize all blocks
+        5. Create sliding window datasets within each block
+        6. Concatenate across patients
+
+    This ensures zero temporal overlap between train/val/test sets.
+
+    Args:
+        target_idx: Index of target signal (0=ABP, 1=PLETH, 2=II).
+
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader, normalization_params).
+    """
+    all_data, metadata = load_raw_data()
+
+    # Step 1: Split each patient's data into contiguous blocks
+    train_blocks = []
+    val_blocks = []
+    test_blocks = []
+
+    for i, patient_data in enumerate(all_data):
+        train_part, val_part, test_part = split_contiguous(
+            patient_data, train_ratio, val_ratio
+        )
+        train_blocks.append(train_part)
+        val_blocks.append(val_part)
+        test_blocks.append(test_part)
+        print(f"[INFO] Patient {i+1}: train={len(train_part)}, "
+              f"val={len(val_part)}, test={len(test_part)}")
+
+    # Step 2: Compute normalization from training data only
+    all_train = np.concatenate(train_blocks, axis=0)
+    means = np.mean(all_train, axis=0)
+    stds = np.std(all_train, axis=0)
+    stds[stds == 0] = 1.0
+
+    print(f"[INFO] Normalization (from training data only):")
+    for i, name in enumerate(SIGNAL_NAMES):
+        print(f"       {name} — mean: {means[i]:.2f}, std: {stds[i]:.2f}")
+
+    # Step 3: Normalize and create datasets per patient block
+    train_datasets = []
+    val_datasets = []
+    test_datasets = []
+
+    for i in range(len(all_data)):
+        # Normalize each block using training statistics
+        norm_train = (train_blocks[i] - means) / stds
+        norm_val = (val_blocks[i] - means) / stds
+        norm_test = (test_blocks[i] - means) / stds
+
+        # Create sliding window datasets within each contiguous block
+        train_ds = MultiSignalForecastDataset(norm_train, target_idx)
+        val_ds = MultiSignalForecastDataset(norm_val, target_idx)
+        test_ds = MultiSignalForecastDataset(norm_test, target_idx)
+
+        train_datasets.append(train_ds)
+        val_datasets.append(val_ds)
+        test_datasets.append(test_ds)
+
+    # Step 4: Concatenate datasets across patients
+    train_dataset = ConcatDataset(train_datasets)
+    val_dataset = ConcatDataset(val_datasets)
+    test_dataset = ConcatDataset(test_datasets)
+
+    train_size = len(train_dataset)
+    val_size = len(val_dataset)
+    test_size = len(test_dataset)
+
+    print(f"[INFO] Combined data: {sum(len(d) for d in all_data)} samples")
+    print(f"[INFO] Train/Val/Test windows: {train_size}/{val_size}/{test_size} "
+          f"(no temporal overlap)")
+
+    # Step 5: Create DataLoaders
+    generator = torch.Generator().manual_seed(RANDOM_SEED)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True,
+        num_workers=0, drop_last=True, generator=generator,
+    )
+
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=0, drop_last=False,
+    )
+
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=0, drop_last=False,
+    )
+
+    print(f"[INFO] Train batches: {len(train_loader)}, "
+          f"Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
+
+    normalization_params = {
+        'means': means.tolist(),
+        'stds': stds.tolist(),
+        'signal_names': SIGNAL_NAMES,
+    }
+
+    return train_loader, val_loader, test_loader, normalization_params
 
 
 def create_dataset(target_idx, input_length=INPUT_LENGTH, forecast_horizon=FORECAST_HORIZON):
     """
     Load data, normalize, and create sliding window dataset for a target signal.
+    Uses the full combined data (for standalone statistics display).
 
     Args:
         target_idx: Index of target signal (0=ABP, 1=PLETH, 2=II).
@@ -136,8 +296,15 @@ def create_dataset(target_idx, input_length=INPUT_LENGTH, forecast_horizon=FOREC
     combined_data = np.concatenate(all_data, axis=0)
     print(f"[INFO] Combined data shape: {combined_data.shape}")
 
-    normalized_data, means, stds = normalize_zscore(combined_data)
-    print(f"[INFO] Normalization applied (z-score per signal)")
+    # For standalone usage, still compute stats from first 70%
+    train_end = int(len(combined_data) * TRAIN_RATIO)
+    train_portion = combined_data[:train_end]
+    means = np.mean(train_portion, axis=0)
+    stds = np.std(train_portion, axis=0)
+    stds[stds == 0] = 1.0
+
+    normalized_data = (combined_data - means) / stds
+    print(f"[INFO] Normalization applied (z-score from training portion)")
     for i, name in enumerate(SIGNAL_NAMES):
         print(f"       {name} — mean: {means[i]:.2f}, std: {stds[i]:.2f}")
 
@@ -156,58 +323,15 @@ def create_dataset(target_idx, input_length=INPUT_LENGTH, forecast_horizon=FOREC
     return dataset, normalization_params
 
 
-def create_dataloaders(target_idx, batch_size=BATCH_SIZE, train_ratio=TRAIN_RATIO,
-                       val_ratio=VAL_RATIO, test_ratio=TEST_RATIO):
-    """
-    Create train, validation, and test DataLoaders for a target signal.
-
-    Args:
-        target_idx: Index of target signal (0=ABP, 1=PLETH, 2=II).
-
-    Returns:
-        Tuple of (train_loader, val_loader, test_loader, normalization_params).
-    """
-    dataset, norm_params = create_dataset(target_idx)
-
-    total = len(dataset)
-    train_size = int(total * train_ratio)
-    val_size = int(total * val_ratio)
-    test_size = total - train_size - val_size
-
-    generator = torch.Generator().manual_seed(RANDOM_SEED)
-    train_dataset, val_dataset, test_dataset = random_split(
-        dataset, [train_size, val_size, test_size], generator=generator
-    )
-
-    print(f"[INFO] Train/Val/Test split: {train_size}/{val_size}/{test_size} "
-          f"({train_ratio*100:.0f}%/{val_ratio*100:.0f}%/{test_ratio*100:.0f}%)")
-
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=0, drop_last=True,
-    )
-
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=0, drop_last=False,
-    )
-
-    test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=0, drop_last=False,
-    )
-
-    print(f"[INFO] Train batches: {len(train_loader)}, "
-          f"Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
-
-    return train_loader, val_loader, test_loader, norm_params
-
-
 def main():
     """Print dataset statistics when run standalone."""
     print("=" * 60)
     print("MIMIC-III Waveform Preprocessing (Diffusion)")
     print("=" * 60)
+    print("[INFO] Split strategy: contiguous time blocks (no data leakage)")
+    print(f"[INFO] Ratios: {TRAIN_RATIO*100:.0f}% train / "
+          f"{VAL_RATIO*100:.0f}% val / {TEST_RATIO*100:.0f}% test")
+    print()
 
     try:
         for target_idx, signal_name in enumerate(SIGNAL_NAMES):
@@ -215,24 +339,15 @@ def main():
             print(f"Target signal: {signal_name} (index {target_idx})")
             print(f"{'—' * 60}")
 
-            dataset, norm_params = create_dataset(target_idx)
+            train_loader, val_loader, test_loader, norm_params = create_dataloaders(
+                target_idx
+            )
 
-            x, y = dataset[0]
-            print(f"  Total samples:       {len(dataset)}")
-            print(f"  Input length:        {INPUT_LENGTH} ({INPUT_LENGTH/125:.2f}s)")
-            print(f"  Input channels:      {NUM_SIGNALS} ({', '.join(SIGNAL_NAMES)})")
-            print(f"  Forecast horizon:    {FORECAST_HORIZON} ({FORECAST_HORIZON/125:.2f}s)")
-            print(f"  Sample input shape:  {x.shape}  (time_steps x signals)")
-            print(f"  Sample target shape: {y.shape}  (forecast_horizon,)")
-
-        train_size = int(len(dataset) * TRAIN_RATIO)
-        val_size = int(len(dataset) * VAL_RATIO)
-        test_size = len(dataset) - train_size - val_size
-        print(f"\n{'=' * 60}")
-        print(f"Split (same for all signals):")
-        print(f"  Train: {train_size} | Val: {val_size} | Test: {test_size}")
-        print(f"  Batch size: {BATCH_SIZE}")
-        print("=" * 60)
+            # Get a sample
+            x, y = next(iter(train_loader))
+            print(f"  Sample input shape:  {x.shape[1:]}  (time_steps x signals)")
+            print(f"  Sample target shape: {y.shape[1:]}  (forecast_horizon,)")
+            print()
 
     except FileNotFoundError as e:
         print(f"[ERROR] {e}")
