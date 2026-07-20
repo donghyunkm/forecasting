@@ -1,0 +1,23 @@
+# Data
+data/
+*.npy
+*.npz
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Model artifacts
+checkpoints/
+outputs/
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
