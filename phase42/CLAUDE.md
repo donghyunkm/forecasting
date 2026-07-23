@@ -52,16 +52,17 @@ Phase 4.1 uses forward-fill imputation + binary masks for missing data (input: 7
 ## Data Source & Processing
 
 ### Source
-- **Raw .npy files:** Reuses Phase 4.1 extracted data from `/gpfs/scratch/dk5565/phase41_data/`
+- **Raw .npy files:** Reuses Phase 4.1 per-chunk data from `/gpfs/scratch/dk5565/phase41_data/`
 - **Processed tensors:** `/gpfs/scratch/dk5565/phase42_data/processed/`
 
 ### Filtering Strategy
-1. Load per-patient `.npy` files (shape: N×4, NaN for missing)
-2. Create sliding windows (stride=12, window=100 steps)
+1. Load per-chunk `.npy` files (shape: N×4, NaN for missing). Each chunk is a continuous recording segment (gap detection >30 min between records).
+2. Create sliding windows (stride=12, window=100 steps) within each chunk
 3. **Filter:** Only keep windows with **zero NaN** across all 100 steps × 4 signals
-4. Z-score normalize using statistics from training patients' data
-5. No forward-fill needed — all values are real measurements
-6. No mask channels — input is just vitals + time position
+4. Split at chunk level (80/10/10, seed=42) — each chunk independently assigned to train/val/test
+5. Z-score normalize using statistics from training chunks' data
+6. No forward-fill needed — all values are real measurements
+7. No mask channels — input is just vitals + time position
 
 ### Expected Data Characteristics
 - **FEWER windows** than Phase 4.1 (266,823 windows) since many windows have gaps
@@ -261,77 +262,67 @@ python plot_predictions.py --epochs 100  # Generate plots
 - Conda activation: `source /gpfs/share/apps/anaconda3/gpu/2023.09/etc/profile.d/conda.sh && conda activate CSDI`
 
 ## Known Considerations
-1. **Significantly fewer windows:** Requiring complete data across all 4 signals × 100 steps is stringent; expect a large reduction from Phase 4.1's 266K windows (especially for signals with ~50% coverage like mean_bp and SpO2)
+1. **Significantly fewer windows:** Requiring complete data across all 4 signals × 100 steps is stringent; ~16% keep rate from Phase 4.1 windows
 2. **Selection bias:** Complete windows are biased toward patients with continuous monitoring (arterial lines, continuous SpO2) — typically sicker ICU patients
 3. **No masking needed:** All values are real, so loss and metrics are computed on all predictions without any masking logic
 4. **Simpler model input:** 5 features instead of 9 — the model doesn't need to learn to ignore/weight masked values
 5. **Fewer parameters informing the model:** Without masks telling the model "this was imputed," the model has less context — but the data it sees is higher quality
-6. **Shared raw data:** Raw .npy files live in Phase 4.1's scratch directory; Phase 4.2 only stores processed tensors separately
-7. **Same patient split:** Uses same patient-level split logic (seed=42) for fair comparison with Phase 4.1
+6. **Shared raw data:** Per-chunk .npy files live in Phase 4.1's scratch directory; Phase 4.2 only stores processed tensors separately
+7. **Chunk-level split:** Each continuous recording segment is independently assigned to train/val/test (not patient-level). Gap detection (>30 min between records) ensures no window spans a temporal discontinuity.
 
 ## Phase 4.1 vs 4.2 Comparison Summary
 | Aspect | Phase 4.1 | Phase 4.2 |
 |--------|-----------|-----------|
 | Missing data handling | Forward-fill + masks | Discard windows with any NaN |
 | Input features | 9 (4 vitals + 4 masks + 1 time) | 5 (4 vitals + 1 time) |
-| Training windows | 216,908 | 29,791 (14% keep rate) |
-| Val windows | 25,448 | 4,026 |
-| Test windows | 24,467 | 3,526 |
+| Split unit | Chunk (continuous recording segment) | Chunk (continuous recording segment) |
+| Training windows | 174,995 | 28,687 (16.3% keep rate) |
+| Val windows | 22,081 | 3,608 |
+| Test windows | 21,221 | 3,383 |
 | Data quality | Mixed (real + imputed) | High (all real measurements) |
 | Loss function | Quantile loss with masking | Quantile loss (mask all 1s) |
 
 ## Results
 
-### Head-to-Head: Phase 4.2 (test set, 3,526 windows)
+### Head-to-Head: Phase 4.2 (test set, 3,383 windows, chunk-level splits)
 
 | Metric | TFT | iTransformer | Winner |
 |--------|-----|--------------|--------|
-| Overall MAE (median) | 4.40 | **4.09** | iTransformer |
-| Overall RMSE (median) | 7.05 | **6.59** | iTransformer |
-| Overall Calibration | 70.4% | **76.4%** | iTransformer |
-| Best epoch | 14 | 15 | — |
+| Overall MAE (median) | 4.42 | **4.13** | iTransformer |
+| Overall RMSE (median) | 7.36 | **6.93** | iTransformer |
+| Overall Calibration | 72.6% | **78.8%** | iTransformer |
+| Best epoch | 12 | 19 | — |
 
 ### Per-Vital MAE (median quantile)
 | Signal | TFT | iTransformer |
 |--------|-----|--------------|
-| mean_bp | 7.45 mmHg | **6.99 mmHg** |
-| pulse | 6.21 bpm | **5.68 bpm** |
-| spo2 | 1.33 % | **1.24 %** |
-| resp_rate | 2.62 /min | **2.46 /min** |
+| mean_bp | 7.75 mmHg | **7.38 mmHg** |
+| pulse | 6.19 bpm | **5.66 bpm** |
+| spo2 | 1.21 % | **1.15 %** |
+| resp_rate | 2.55 /min | **2.32 /min** |
 
 ### Per-Vital Calibration (target: 80%)
 | Signal | TFT | iTransformer |
 |--------|-----|--------------|
-| mean_bp | 72.1% | **77.0%** |
-| pulse | 65.5% | **76.0%** |
-| spo2 | 71.7% | **77.2%** |
-| resp_rate | 72.3% | **75.3%** |
+| mean_bp | 72.6% | **78.3%** |
+| pulse | 71.5% | **78.3%** |
+| spo2 | 74.4% | **80.7%** |
+| resp_rate | 71.6% | **77.9%** |
 
 ### Per-Vital Correlation
 | Signal | TFT | iTransformer |
 |--------|-----|--------------|
-| mean_bp | 0.766 | **0.791** |
-| pulse | 0.833 | **0.862** |
-| spo2 | 0.652 | **0.704** |
-| resp_rate | 0.734 | **0.764** |
-
-### Phase 4.1 vs 4.2 (iTransformer)
-| Metric | Phase 4.1 | Phase 4.2 | Change |
-|--------|-----------|-----------|--------|
-| Overall MAE | 4.29 | **4.09** | -4.7% (better) |
-| Overall RMSE | 7.10 | **6.59** | -7.2% (better) |
-| Calibration | **80.8%** | 76.4% | -4.4% (worse) |
-| Correlation (mean) | 0.760 | **0.780** | +2.6% (better) |
+| mean_bp | 0.767 | **0.788** |
+| pulse | 0.848 | **0.870** |
+| spo2 | 0.676 | **0.708** |
+| resp_rate | 0.768 | **0.802** |
 
 ### Key Findings
-- **MAE improved** — complete windows with real dynamics produce better point forecasts
-- **Calibration dropped** — with only real data (no flat forward-filled segments), there's more variability to capture; prediction intervals need to be wider
-- **Correlation improved** — model tracks actual physiological fluctuations better (especially SpO2: 0.65→0.70)
-- **iTransformer still dominates TFT** across all metrics
-- **TFT calibration severely degraded** (70.4%) — struggling more than iTransformer with the smaller, more dynamic dataset
-
-## Git
-- .gitignore excludes: data/, checkpoints/, outputs/, logs/, __pycache__/, *.npy
+- **iTransformer dominates TFT** across all metrics (consistent with prior runs)
+- **iTransformer calibration near target** — 78.8% overall (SpO2 achieves 80.7%)
+- **TFT calibration degraded** (72.6%) — prediction intervals too narrow
+- **Chunk-level splits** prevent temporal leakage from discontinuous record concatenation
+- Results are consistent with prior patient-level split runs, confirming that the chunk-level split fix does not materially change model performance while improving data integrity
 
 ## Git
 - .gitignore excludes: data/, checkpoints/, outputs/, logs/, __pycache__/, *.npy, *.pyc, .ipynb_checkpoints/

@@ -5,10 +5,13 @@ prepare_data.py - Extract, preprocess, and save all data for Phase 41 TFT-multi.
 This script runs the full data pipeline and saves pre-processed tensors to disk
 so that subsequent model training runs load instantly without reprocessing.
 
+Splitting is done at the CHUNK level — each continuous recording segment is
+independently assigned to train/val/test. No patient-level grouping.
+
 Steps:
     1. Extract vital signs from WFDB numerics (calls download_data.py logic)
-    2. Split patients (80/10/10, seed=42)
-    3. Compute normalization stats from training patients
+    2. Split chunks (80/10/10, seed=42)
+    3. Compute normalization stats from training chunks
     4. Generate all sliding windows, normalize, and save as .pt tensor files
 
 Output (saved to /gpfs/scratch/dk5565/phase41_data/processed/):
@@ -17,7 +20,7 @@ Output (saved to /gpfs/scratch/dk5565/phase41_data/processed/):
     - val_data.pt: same structure
     - test_data.pt: same structure
     - norm_params.json: normalization mean/std
-    - split_info.json: patient split metadata
+    - split_info.json: chunk split metadata
 
 Usage:
     python prepare_data.py [--num-patients 100] [--skip-download]
@@ -47,10 +50,11 @@ from preprocess import (
 PROCESSED_DIR = os.path.join(DATA_DIR, 'processed')
 
 
-def generate_windows_for_patients(patient_files, data_dir, norm_params):
+def generate_windows_for_chunks(chunk_files, data_dir, norm_params):
     """
-    Generate all sliding windows for a list of patients.
+    Generate all sliding windows for a list of chunks.
 
+    Each chunk is an independent continuous recording segment.
     Returns dict of stacked tensors ready for training.
     """
     norm_mean = norm_params['mean'].astype(np.float32)
@@ -64,8 +68,10 @@ def generate_windows_for_patients(patient_files, data_dir, norm_params):
 
     time_pos = np.linspace(0, 1, WINDOW_SIZE, dtype=np.float32)
 
-    for fname in patient_files:
+    for fname in chunk_files:
         fpath = os.path.join(data_dir, fname)
+        if not os.path.exists(fpath):
+            continue
         raw_data = np.load(fpath)  # (N, 4)
         n_steps = raw_data.shape[0]
 
@@ -135,13 +141,13 @@ def main():
     parser = argparse.ArgumentParser(
         description='Prepare all data for Phase 41 TFT-multi (extract + preprocess + save)')
     parser.add_argument('--num-patients', type=int, default=0,
-                        help='Number of patients to extract (0 = all qualified, default: 0)')
+                        help='Number of patients to process (0 = all, default: 0)')
     parser.add_argument('--skip-download', action='store_true',
                         help='Skip extraction if .npy files already exist')
     args = parser.parse_args()
 
     print("=" * 70)
-    print("Phase 41 — Data Preparation Pipeline")
+    print("Phase 41 — Data Preparation Pipeline (Chunk-Level Splits)")
     print("=" * 70)
     print(f"  Data dir:      {DATA_DIR}")
     print(f"  Processed dir: {PROCESSED_DIR}")
@@ -149,6 +155,7 @@ def main():
     print(f"  Window:        {PAST_MONTHS} input + {FUTURE_MONTHS} output = {WINDOW_SIZE} steps")
     print(f"  Stride:        {STRIDE} steps ({STRIDE * 15 / 60:.1f} hours)")
     print(f"  Resolution:    15-minute intervals")
+    print(f"  Split unit:    chunk (continuous recording segment)")
     print()
 
     start_time = time.time()
@@ -174,29 +181,30 @@ def main():
         print()
 
     # =========================================================================
-    # Step 2: Load metadata and get patient file list
+    # Step 2: Load metadata and get chunk file list
     # =========================================================================
-    print("[STEP 2] Loading metadata and splitting patients...")
+    print("[STEP 2] Loading metadata and splitting chunks...")
 
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
 
-    # Get list of .npy files
-    patient_files = [m['patient_id'] + '.npy' for m in metadata]
-    print(f"  Total patients: {len(patient_files)}")
+    # Get list of chunk .npy files
+    chunk_files = [m['chunk_id'] + '.npy' for m in metadata]
+    unique_patients = len(set(m['patient_id'] for m in metadata))
+    print(f"  Total chunks: {len(chunk_files)} (from {unique_patients} patients)")
 
-    # Patient-level split
+    # Chunk-level split
     rng = np.random.RandomState(RANDOM_SEED)
-    indices = np.arange(len(patient_files))
+    indices = np.arange(len(chunk_files))
     rng.shuffle(indices)
 
-    n_total = len(patient_files)
+    n_total = len(chunk_files)
     n_train = int(n_total * TRAIN_RATIO)
     n_val = int(n_total * VAL_RATIO)
 
-    train_files = [patient_files[i] for i in indices[:n_train]]
-    val_files = [patient_files[i] for i in indices[n_train:n_train + n_val]]
-    test_files = [patient_files[i] for i in indices[n_train + n_val:]]
+    train_files = [chunk_files[i] for i in indices[:n_train]]
+    val_files = [chunk_files[i] for i in indices[n_train:n_train + n_val]]
+    test_files = [chunk_files[i] for i in indices[n_train + n_val:]]
 
     print(f"  Split: {len(train_files)} train / {len(val_files)} val / {len(test_files)} test")
 
@@ -215,8 +223,8 @@ def main():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
 
     for split_name, split_files in [('train', train_files), ('val', val_files), ('test', test_files)]:
-        print(f"\n  Processing {split_name} ({len(split_files)} patients)...")
-        data = generate_windows_for_patients(split_files, DATA_DIR, norm_params)
+        print(f"\n  Processing {split_name} ({len(split_files)} chunks)...")
+        data = generate_windows_for_chunks(split_files, DATA_DIR, norm_params)
 
         if data is None:
             print(f"    WARNING: No windows generated for {split_name}")
@@ -248,6 +256,7 @@ def main():
     split_path = os.path.join(PROCESSED_DIR, 'split_info.json')
     with open(split_path, 'w') as f:
         json.dump({
+            'split_unit': 'chunk',
             'train_files': train_files,
             'val_files': val_files,
             'test_files': test_files,

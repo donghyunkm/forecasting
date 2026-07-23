@@ -6,13 +6,16 @@ Key difference from Phase 41: NO forward-fill, NO masks.
 Only windows where ALL 4 vitals have real values at EVERY timestep (100 steps)
 are kept. This gives fewer windows but cleaner signal.
 
-Source data: /gpfs/scratch/dk5565/phase41_data (reuses phase41 .npy files)
+Splitting is done at the CHUNK level — each continuous recording segment is
+independently assigned to train/val/test. No patient-level grouping.
+
+Source data: /gpfs/scratch/dk5565/phase41_data (reuses phase41 per-chunk .npy files)
 Output:      /gpfs/scratch/dk5565/phase42_data/processed/
 
 Steps:
     1. Load metadata from phase41
-    2. Split patients (80/10/10, seed=42)
-    3. Compute normalization stats from training patients (real values only)
+    2. Split chunks (80/10/10, seed=42)
+    3. Compute normalization stats from training chunks (real values only)
     4. Generate sliding windows, SKIP any with NaN, save as .pt tensors
 
 Output:
@@ -44,19 +47,20 @@ from preprocess import (
     compute_normalization_stats,
 )
 
-# Source: reuse phase41 extracted .npy files
+# Source: reuse phase41 extracted per-chunk .npy files
 DATA_DIR = '/gpfs/scratch/dk5565/phase41_data'
 # Output: phase42 processed tensors
 PROCESSED_DIR = '/gpfs/scratch/dk5565/phase42_data/processed'
 
 
-def generate_windows_for_patients(patient_files, data_dir, norm_params):
+def generate_windows_for_chunks(chunk_files, data_dir, norm_params):
     """
-    Generate sliding windows for a list of patients, keeping ONLY complete windows.
+    Generate sliding windows for a list of chunks, keeping ONLY complete windows.
 
     A window is complete if ALL 4 signals have real (non-NaN) values at EVERY
     timestep in the 100-step window.
 
+    Each chunk is an independent continuous recording segment.
     Returns dict of stacked tensors and (kept_count, discarded_count).
     """
     norm_mean = norm_params['mean'].astype(np.float32)
@@ -73,7 +77,7 @@ def generate_windows_for_patients(patient_files, data_dir, norm_params):
     kept = 0
     discarded = 0
 
-    for fname in patient_files:
+    for fname in chunk_files:
         fpath = os.path.join(data_dir, fname)
         if not os.path.exists(fpath):
             continue
@@ -154,13 +158,14 @@ def main():
     args = parser.parse_args()
 
     print("=" * 70)
-    print("Phase 42 — Data Preparation Pipeline (Complete Windows Only)")
+    print("Phase 42 — Data Preparation Pipeline (Complete Windows, Chunk-Level Splits)")
     print("=" * 70)
     print(f"  Source data dir: {DATA_DIR}")
     print(f"  Output dir:      {PROCESSED_DIR}")
     print(f"  Window:          {PAST_MONTHS} input + {FUTURE_MONTHS} output = {WINDOW_SIZE} steps")
     print(f"  Stride:          {STRIDE} steps ({STRIDE * 15 / 60:.1f} hours)")
     print(f"  Resolution:      15-minute intervals")
+    print(f"  Split unit:      chunk (continuous recording segment)")
     print(f"  Key insight:     NO missing data, NO masks, NO forward-fill")
     print(f"                   Only windows with complete data across all 4 vitals")
     print()
@@ -182,31 +187,32 @@ def main():
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
 
-    # Get list of .npy files
-    patient_files = [m['patient_id'] + '.npy' for m in metadata]
-    print(f"  Total patients from phase41: {len(patient_files)}")
+    # Get list of chunk .npy files
+    chunk_files = [m['chunk_id'] + '.npy' for m in metadata]
+    unique_patients = len(set(m['patient_id'] for m in metadata))
+    print(f"  Total chunks from phase41: {len(chunk_files)} (from {unique_patients} patients)")
 
     # =========================================================================
-    # Step 2: Patient-level split
+    # Step 2: Chunk-level split
     # =========================================================================
-    print("[STEP 2] Splitting patients (80/10/10, seed=42)...")
+    print("[STEP 2] Splitting chunks (80/10/10, seed=42)...")
 
     rng = np.random.RandomState(RANDOM_SEED)
-    indices = np.arange(len(patient_files))
+    indices = np.arange(len(chunk_files))
     rng.shuffle(indices)
 
-    n_total = len(patient_files)
+    n_total = len(chunk_files)
     n_train = int(n_total * TRAIN_RATIO)
     n_val = int(n_total * VAL_RATIO)
 
-    train_files = [patient_files[i] for i in indices[:n_train]]
-    val_files = [patient_files[i] for i in indices[n_train:n_train + n_val]]
-    test_files = [patient_files[i] for i in indices[n_train + n_val:]]
+    train_files = [chunk_files[i] for i in indices[:n_train]]
+    val_files = [chunk_files[i] for i in indices[n_train:n_train + n_val]]
+    test_files = [chunk_files[i] for i in indices[n_train + n_val:]]
 
     print(f"  Split: {len(train_files)} train / {len(val_files)} val / {len(test_files)} test")
 
     # =========================================================================
-    # Step 3: Compute normalization stats from training patients
+    # Step 3: Compute normalization stats from training chunks
     # =========================================================================
     print("[STEP 3] Computing normalization statistics from training data...")
     print("         (using real values only, no masking needed)")
@@ -224,8 +230,8 @@ def main():
     total_discarded = 0
 
     for split_name, split_files in [('train', train_files), ('val', val_files), ('test', test_files)]:
-        print(f"\n  Processing {split_name} ({len(split_files)} patients)...")
-        data, kept, discarded = generate_windows_for_patients(split_files, DATA_DIR, norm_params)
+        print(f"\n  Processing {split_name} ({len(split_files)} chunks)...")
+        data, kept, discarded = generate_windows_for_chunks(split_files, DATA_DIR, norm_params)
 
         total_kept += kept
         total_discarded += discarded
@@ -262,6 +268,7 @@ def main():
     split_path = os.path.join(PROCESSED_DIR, 'split_info.json')
     with open(split_path, 'w') as f:
         json.dump({
+            'split_unit': 'chunk',
             'train_files': train_files,
             'val_files': val_files,
             'test_files': test_files,
@@ -274,7 +281,7 @@ def main():
             'past_months': PAST_MONTHS,
             'future_months': FUTURE_MONTHS,
             'phase': 42,
-            'description': 'Complete-data-only windows (no NaN, no forward-fill, no masks)',
+            'description': 'Complete-data-only windows (no NaN, no forward-fill, no masks), chunk-level splits',
         }, f, indent=2)
     print(f"  Saved: {split_path}")
 

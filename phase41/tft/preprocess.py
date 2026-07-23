@@ -1,8 +1,11 @@
 """
 Phase 41 TFT Preprocessing
 ---------------------------
-Adapted from Phase 4 preprocess.py for 15-minute resolution with 4 vital signs.
-Loads per-patient .npy files, applies forward-fill imputation, sliding window,
+Adapted for chunk-level splitting. Each continuous recording chunk (from
+download_data.py) is an independent unit. Chunks are randomly assigned to
+train/val/test splits (80/10/10, seed=42).
+
+Loads per-chunk .npy files, applies forward-fill imputation, sliding window,
 and Z-score normalization for Temporal Fusion Transformer training.
 """
 
@@ -32,7 +35,7 @@ BATCH_SIZE = 64
 RANDOM_SEED = 42
 STRIDE = 12             # 3 hours × 4 = 12 steps
 
-WINDOW_SIZE = PAST_MONTHS + FUTURE_MONTHS  # 400 steps total
+WINDOW_SIZE = PAST_MONTHS + FUTURE_MONTHS  # 100 steps total
 
 
 # ============================================================================
@@ -66,17 +69,19 @@ def forward_fill(data):
     return filled
 
 
-def compute_normalization_stats(patient_files, data_dir):
+def compute_normalization_stats(chunk_files, data_dir):
     """
-    Compute per-signal mean and std from training patients' real (non-NaN) values only.
+    Compute per-signal mean and std from training chunks' real (non-NaN) values only.
     Returns dict with 'mean' and 'std' arrays of shape (4,).
     """
     sums = np.zeros(NUM_SIGNALS)
     sum_sq = np.zeros(NUM_SIGNALS)
     counts = np.zeros(NUM_SIGNALS)
 
-    for fname in patient_files:
+    for fname in chunk_files:
         fpath = os.path.join(data_dir, fname)
+        if not os.path.exists(fpath):
+            continue
         data = np.load(fpath)  # shape: (N, 4)
         for s in range(NUM_SIGNALS):
             col = data[:, s]
@@ -100,14 +105,14 @@ def compute_normalization_stats(patient_files, data_dir):
 class TimeSeriesDataset(Dataset):
     """
     Dataset for Phase 41 TFT.
-    Loads per-patient .npy files, applies forward-fill, sliding window,
-    and Z-score normalization.
+    Loads per-chunk .npy files, applies forward-fill, sliding window,
+    and Z-score normalization. Each chunk is an independent continuous segment.
     """
 
-    def __init__(self, patient_files, data_dir, norm_params):
+    def __init__(self, chunk_files, data_dir, norm_params):
         """
         Args:
-            patient_files: list of .npy filenames
+            chunk_files: list of .npy filenames (one per chunk)
             data_dir: directory containing .npy files
             norm_params: dict with 'mean' and 'std' arrays of shape (4,)
         """
@@ -115,12 +120,14 @@ class TimeSeriesDataset(Dataset):
         self.norm_mean = norm_params['mean']
         self.norm_std = norm_params['std']
 
-        # Build index of all valid windows across all patients
-        self.windows = []  # list of (file_path, raw_mask, filled_data, start_idx)
-        self._patient_data = []  # store loaded patient data
+        # Build index of all valid windows across all chunks
+        self.windows = []
+        self._chunk_data = []
 
-        for fname in patient_files:
+        for fname in chunk_files:
             fpath = os.path.join(data_dir, fname)
+            if not os.path.exists(fpath):
+                continue
             raw_data = np.load(fpath)  # shape: (N, 4)
             n_steps = raw_data.shape[0]
 
@@ -137,9 +144,9 @@ class TimeSeriesDataset(Dataset):
             normalized = (filled - self.norm_mean) / self.norm_std
             normalized = normalized.astype(np.float32)
 
-            # Store patient data
-            patient_idx = len(self._patient_data)
-            self._patient_data.append({
+            # Store chunk data
+            chunk_idx = len(self._chunk_data)
+            self._chunk_data.append({
                 'normalized': normalized,
                 'mask': mask,
             })
@@ -148,20 +155,20 @@ class TimeSeriesDataset(Dataset):
             num_windows = (n_steps - WINDOW_SIZE) // STRIDE + 1
             for w in range(num_windows):
                 start = w * STRIDE
-                self.windows.append((patient_idx, start))
+                self.windows.append((chunk_idx, start))
 
     def __len__(self):
         return len(self.windows)
 
     def __getitem__(self, idx):
-        patient_idx, start = self.windows[idx]
-        patient = self._patient_data[patient_idx]
+        chunk_idx, start = self.windows[idx]
+        chunk = self._chunk_data[chunk_idx]
 
         end = start + WINDOW_SIZE
-        normalized = patient['normalized'][start:end]  # (400, 4)
-        mask = patient['mask'][start:end]              # (400, 4)
+        normalized = chunk['normalized'][start:end]  # (100, 4)
+        mask = chunk['mask'][start:end]              # (100, 4)
 
-        # Time position: linearly spaced 0 to 1 over the full 400-step window
+        # Time position: linearly spaced 0 to 1 over the full 100-step window
         time_pos = np.linspace(0, 1, WINDOW_SIZE, dtype=np.float32)
 
         # Split into historical and future
@@ -235,6 +242,9 @@ def create_dataloaders(data_dir=DATA_DIR, batch_size=BATCH_SIZE, num_workers=4):
     If pre-processed .pt files exist (from prepare_data.py), loads those directly.
     Otherwise falls back to on-the-fly processing from .npy files.
 
+    Splitting is done at the CHUNK level — each chunk file is independently
+    assigned to a split. No patient-level grouping.
+
     Returns:
         train_loader, val_loader, test_loader, norm_params
     """
@@ -288,24 +298,25 @@ def create_dataloaders(data_dir=DATA_DIR, batch_size=BATCH_SIZE, num_workers=4):
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
 
-    patient_files = [m['patient_id'] + '.npy' for m in metadata]
+    # Get chunk files (each entry in metadata is one chunk)
+    chunk_files = [m['chunk_id'] + '.npy' for m in metadata]
 
-    # Shuffle and split at patient level
+    # Shuffle and split at CHUNK level
     rng = np.random.RandomState(RANDOM_SEED)
-    indices = np.arange(len(patient_files))
+    indices = np.arange(len(chunk_files))
     rng.shuffle(indices)
 
-    n_total = len(patient_files)
+    n_total = len(chunk_files)
     n_train = int(n_total * TRAIN_RATIO)
     n_val = int(n_total * VAL_RATIO)
 
-    train_files = [patient_files[i] for i in indices[:n_train]]
-    val_files = [patient_files[i] for i in indices[n_train:n_train + n_val]]
-    test_files = [patient_files[i] for i in indices[n_train + n_val:]]
+    train_files = [chunk_files[i] for i in indices[:n_train]]
+    val_files = [chunk_files[i] for i in indices[n_train:n_train + n_val]]
+    test_files = [chunk_files[i] for i in indices[n_train + n_val:]]
 
-    print(f"Patient split: {len(train_files)} train, {len(val_files)} val, {len(test_files)} test")
+    print(f"Chunk split: {len(train_files)} train, {len(val_files)} val, {len(test_files)} test")
 
-    # Compute normalization stats from training patients only
+    # Compute normalization stats from training chunks only
     print("Computing normalization statistics from training data...")
     norm_params = compute_normalization_stats(train_files, data_dir)
     print(f"  Mean: {norm_params['mean']}")

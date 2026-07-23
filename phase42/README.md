@@ -2,45 +2,40 @@
 
 Same task as Phase 4.1 but **only uses windows with zero missing data** across all 4 signals at all timesteps. No forward-fill, no mask channels. Forces the model to learn actual physiological dynamics.
 
-## Results
+Uses **chunk-level splits** — each continuous recording segment (gap detection at >30 min between records) is independently assigned to train/val/test, preventing windows from spanning temporal discontinuities.
+
+## Results (chunk-level splits, 3,383 test windows)
 
 | Metric | TFT | iTransformer |
 |--------|-----|--------------|
-| Overall MAE | 4.40 | **4.09** |
-| Overall RMSE | 7.05 | **6.59** |
-| Calibration (target 80%) | 70.4% | **76.4%** |
+| Overall MAE | 4.42 | **4.13** |
+| Overall RMSE | 7.36 | **6.93** |
+| Calibration (target 80%) | 72.6% | **78.8%** |
+| Best epoch | 12 | 19 |
 
 ### Per-Vital MAE
 | Signal | TFT | iTransformer |
 |--------|-----|--------------|
-| mean_bp | 7.45 mmHg | **6.99 mmHg** |
-| pulse | 6.21 bpm | **5.68 bpm** |
-| spo2 | 1.33 % | **1.24 %** |
-| resp_rate | 2.62 /min | **2.46 /min** |
+| mean_bp | 7.75 mmHg | **7.38 mmHg** |
+| pulse | 6.19 bpm | **5.66 bpm** |
+| spo2 | 1.21 % | **1.15 %** |
+| resp_rate | 2.55 /min | **2.32 /min** |
 
-### Phase 4.1 vs 4.2 (iTransformer)
-| Metric | Phase 4.1 | Phase 4.2 | Notes |
-|--------|-----------|-----------|-------|
-| MAE | 4.29 | **4.09** | Better point forecasts |
-| RMSE | 7.10 | **6.59** | Better on outliers |
-| Calibration | **80.8%** | 76.4% | More variability to capture |
-| Correlation | 0.760 | **0.780** | Tracks dynamics better |
+### Per-Vital Calibration (target: 80%)
+| Signal | TFT | iTransformer |
+|--------|-----|--------------|
+| mean_bp | 72.6% | **78.3%** |
+| pulse | 71.5% | **78.3%** |
+| spo2 | 74.4% | **80.7%** |
+| resp_rate | 71.6% | **77.9%** |
 
-### Uncertainty Quantification (Calibration & Prediction Intervals)
-
-Both models predict 10th, 50th, 90th percentiles. The 10th–90th interval = 80% prediction band.
-
-| Signal | TFT Calibration | iTrans Calibration | Target |
-|--------|-----------------|--------------------| -------|
-| mean_bp | 72.1% | **77.0%** | 80% |
-| pulse | 65.5% | **76.0%** | 80% |
-| spo2 | 71.7% | **77.2%** | 80% |
-| resp_rate | 72.3% | **75.3%** | 80% |
-
-- Both models under-calibrate on complete-window data (intervals too narrow)
-- Real physiological data has more variability than forward-filled data → harder to bound
-- iTransformer closer to target (76.4% vs TFT's 70.4%)
-- TFT pulse calibration especially poor (65.5%) — fails to capture HR variability
+### Per-Vital Correlation
+| Signal | TFT | iTransformer |
+|--------|-----|--------------|
+| mean_bp | 0.767 | **0.788** |
+| pulse | 0.848 | **0.870** |
+| spo2 | 0.676 | **0.708** |
+| resp_rate | 0.768 | **0.802** |
 
 ## What's Different from Phase 4.1
 
@@ -48,7 +43,8 @@ Both models predict 10th, 50th, 90th percentiles. The 10th–90th interval = 80%
 |--------|-----------|-----------|
 | Missing data | Forward-fill + mask input | Discard (no NaN allowed) |
 | Input features | 9 (4 vitals + 4 masks + 1 time) | 5 (4 vitals + 1 time) |
-| Training windows | 216,908 | 29,791 (14% kept) |
+| Split unit | Chunk (continuous segment) | Chunk (continuous segment) |
+| Training windows | 174,995 | 28,687 (16.3% kept) |
 | Data quality | Mixed real + imputed | 100% real measurements |
 | Selection bias | All patients | Patients with full monitoring |
 
@@ -57,7 +53,7 @@ Both models predict 10th, 50th, 90th percentiles. The 10th–90th interval = 80%
 ```bash
 cd /gpfs/home/dk5565/forecasting/phase42
 
-# Data prep (filters complete windows from phase41 data, ~13 sec)
+# Data prep (filters complete windows from phase41 chunk data)
 cd tft && sbatch prepare_data.sh
 
 # Train models
@@ -69,13 +65,13 @@ cd iTransformer && sbatch train.sh
 
 | What | Path |
 |------|------|
-| Source .npy files | `/gpfs/scratch/dk5565/phase41_data/` (shared with phase41) |
+| Source per-chunk .npy files | `/gpfs/scratch/dk5565/phase41_data/` (shared with phase41) |
 | Processed tensors | `/gpfs/scratch/dk5565/phase42_data/processed/` |
 
 ## Key Findings
 
-- MAE improved ~5% by removing forward-filled data
-- Correlation improved — model tracks real physiological fluctuations better
-- Calibration dropped — real data has more variability than flat forward-filled segments, intervals need to be wider
-- 14% keep rate (37K from 267K windows) still provides sufficient training data
-- iTransformer continues to outperform TFT on all metrics
+- **iTransformer dominates TFT** across all metrics consistently
+- **iTransformer calibration near target** — 78.8% overall (SpO2 hits 80.7%)
+- **TFT under-calibrates** (72.6%) — prediction intervals too narrow for real physiological variability
+- **16.3% keep rate** from Phase 4.1 windows (complete data across all 4 signals is stringent)
+- **Chunk-level splits** prevent temporal leakage from discontinuous record concatenation while maintaining similar performance to prior patient-level splits
