@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-Phase 5 Data Preparation: mimicEran merged data → TFT-ready .pt files.
+Phase 5 Ablation Data Preparation: vitals-only input (no correlation features).
 
-Loads 11-dim feature vectors (7 correlations + 4 vitals) at 5-min resolution,
-creates sliding windows (96 steps = 8h total: 72 history + 24 forecast),
-filters NaN-free windows, splits by patient, normalizes, and saves.
+Same pipeline as Phase 5 prepare_data.py but drops channels 0-6 (correlations),
+keeping only channels 7-10 (vitals). This produces tensors with:
+  - historical_ts_numeric: (N, 72, 5)  -- 4 vitals + 1 time position
+  - target: (N, 24, 4) -- same as full model
+
+This allows direct comparison with the full Phase 5 model to measure the
+contribution of waveform correlation features.
 """
 
 import os
@@ -15,16 +19,17 @@ from collections import defaultdict
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 DATA_SOURCE = "/gpfs/home/dk5565/forecasting/phase5/data_extraction/output/merged/"
-OUTPUT_DIR = "/gpfs/home/dk5565/forecasting/phase5/phase5_data/processed/"
+OUTPUT_DIR = "/gpfs/home/dk5565/forecasting/phase5/ablation/data/processed/"
 
 WINDOW_TOTAL = 96       # 72 history + 24 forecast
-WINDOW_HISTORY = 72     # 6h at 5-min resolution
-WINDOW_FORECAST = 24    # 2h at 5-min resolution
+WINDOW_HISTORY = 72     # 6h at 5-min stride
+WINDOW_FORECAST = 24    # 2h at 5-min stride
 STRIDE = 12            # 1h stride
 EXPECTED_DT = 300      # 5 minutes in seconds
 
-NUM_FEATURES = 11      # 7 correlations + 4 vitals
-VITAL_INDICES = [7, 8, 9, 10]  # ABPMean, PULSE, SpO2, RESP
+NUM_FEATURES_FULL = 11  # 7 correlations + 4 vitals (original)
+NUM_VITALS = 4          # vitals-only for ablation
+VITAL_INDICES = [7, 8, 9, 10]  # ABPMean, PULSE, SpO2, RESP in original 11-dim
 
 TRAIN_FRAC = 0.70
 VAL_FRAC = 0.15
@@ -45,7 +50,6 @@ def load_data():
     print(f"  Total windows: {len(features):,}")
     print(f"  Feature shape: {features.shape}")
     print(f"  Unique patients: {len(np.unique(patient_ids)):,}")
-    print(f"  Unique segments: {len(np.unique(seg_names)):,}")
 
     return features, patient_ids, seg_names, window_times
 
@@ -92,9 +96,9 @@ def split_at_gaps(indices, window_times, expected_dt=EXPECTED_DT):
 
 
 def create_sliding_windows(continuous_segments, features, window_times):
-    """Create sliding windows from continuous segments."""
-    print("\nCreating sliding windows...")
-    windows = []  # Each: (feature_array[96,11], patient_id_for_static)
+    """Create sliding windows from continuous segments (vitals-only)."""
+    print("\nCreating sliding windows (vitals-only)...")
+    windows = []
     patient_ids_out = []
 
     total_segments = 0
@@ -106,17 +110,22 @@ def create_sliding_windows(continuous_segments, features, window_times):
                 continue
             total_segments += 1
 
+            # Extract only vitals (indices 7-10 from the 11-dim features)
             seg_features = features[indices]  # (L, 11)
 
             # Sliding window
             for start in range(0, len(indices) - WINDOW_TOTAL + 1, STRIDE):
-                window_feats = seg_features[start:start + WINDOW_TOTAL]  # (96, 11)
+                window_full = seg_features[start:start + WINDOW_TOTAL]  # (96, 11)
 
-                # Check for NaN: only keep windows with zero NaN
-                if np.any(np.isnan(window_feats)):
+                # Check for NaN across ALL 11 features (same filter as full model
+                # to keep exact same set of windows for fair comparison)
+                if np.any(np.isnan(window_full)):
                     continue
 
-                windows.append(window_feats)
+                # Extract only vital signs
+                window_vitals = window_full[:, VITAL_INDICES]  # (96, 4)
+
+                windows.append(window_vitals)
                 patient_ids_out.append(pid)
                 total_windows += 1
 
@@ -149,16 +158,15 @@ def split_patients(patient_ids_out, seed=SEED):
 
 
 def compute_norm_stats(windows, patient_ids_out, train_patients):
-    """Compute Z-score normalization statistics from training patients."""
+    """Compute Z-score normalization statistics from training patients (vitals only)."""
     print("\nComputing normalization statistics from training set...")
     train_mask = np.array([pid in train_patients for pid in patient_ids_out])
-    train_data = windows[train_mask]  # (N_train, 96, 11)
+    train_data = windows[train_mask]  # (N_train, 96, 4)
 
-    # Compute mean and std across all time steps and windows for each feature
-    # Reshape to (N_train * 96, 11) for per-feature stats
-    flat = train_data.reshape(-1, NUM_FEATURES)
-    means = np.nanmean(flat, axis=0)
-    stds = np.nanstd(flat, axis=0)
+    # Compute mean and std across all time steps and windows for each vital
+    flat = train_data.reshape(-1, NUM_VITALS)  # (N_train * 96, 4)
+    means = np.nanmean(flat, axis=0)  # (4,)
+    stds = np.nanstd(flat, axis=0)    # (4,)
 
     # Prevent division by zero
     stds[stds < 1e-8] = 1.0
@@ -170,43 +178,41 @@ def compute_norm_stats(windows, patient_ids_out, train_patients):
 
 
 def normalize(windows, means, stds):
-    """Z-score normalize all 11 features."""
+    """Z-score normalize vitals."""
     return (windows - means[np.newaxis, np.newaxis, :]) / stds[np.newaxis, np.newaxis, :]
 
 
 def build_tensors(windows_norm, patient_ids_out, split_patients_set, split_name):
-    """Build TFT-ready tensors for a given split."""
+    """Build TFT-ready tensors for a given split (vitals-only: 5 input features)."""
     mask = np.array([pid in split_patients_set for pid in patient_ids_out])
-    split_windows = windows_norm[mask]  # (N, 96, 11)
+    split_windows = windows_norm[mask]  # (N, 96, 4)
     N = split_windows.shape[0]
 
     if N == 0:
         print(f"  WARNING: {split_name} has 0 windows!")
         return None
 
-    # Historical: first 72 steps, 11 features + 1 time position = 12 channels
-    historical_feats = split_windows[:, :WINDOW_HISTORY, :]  # (N, 72, 11)
+    # Historical: first 72 steps, 4 vitals + 1 time position = 5 channels
+    historical_vitals = split_windows[:, :WINDOW_HISTORY, :]  # (N, 72, 4)
 
-    # Time position for history: linear 0 → 0.75 (72 steps covering first 75% of window)
+    # Time position for history
     time_hist = np.linspace(0.0, 0.75, WINDOW_HISTORY, dtype=np.float32)
     time_hist = np.tile(time_hist, (N, 1))[:, :, np.newaxis]  # (N, 72, 1)
 
-    historical_ts_numeric = np.concatenate([historical_feats, time_hist], axis=2)  # (N, 72, 12)
+    historical_ts_numeric = np.concatenate([historical_vitals, time_hist], axis=2)  # (N, 72, 5)
 
-    # Future: time position only, continuing from ~0.76 → 1.0
+    # Future: time position only
     time_future = np.linspace(0.76, 1.0, WINDOW_FORECAST, dtype=np.float32)
     time_future = np.tile(time_future, (N, 1))[:, :, np.newaxis]  # (N, 24, 1)
     future_ts_numeric = time_future
 
-    # Target: 4 vitals for future 24 steps (already normalized)
-    target = split_windows[:, WINDOW_HISTORY:, :][:, :, VITAL_INDICES]  # (N, 24, 4)
+    # Target: 4 vitals for future 24 steps (normalized)
+    target = split_windows[:, WINDOW_HISTORY:, :]  # (N, 24, 4)
 
     # Target mask: all ones since we filtered out NaN windows
-    target_mask = np.ones((N, WINDOW_FORECAST, len(VITAL_INDICES)), dtype=np.float32)
+    target_mask = np.ones((N, WINDOW_FORECAST, NUM_VITALS), dtype=np.float32)
 
-    # Static features: patient ID encoded as a single numeric (normalized index)
-    # Use a simple approach: encode as 0.0 (placeholder, as individual patient identity
-    # isn't meaningful for generalization - this is just a structural requirement of TFT)
+    # Static features: placeholder
     static_feats_numeric = np.zeros((N, 1), dtype=np.float32)
 
     data_dict = {
@@ -219,7 +225,6 @@ def build_tensors(windows_norm, patient_ids_out, split_patients_set, split_name)
 
     print(f"  {split_name}: {N:,} windows")
     print(f"    historical_ts_numeric: {data_dict['historical_ts_numeric'].shape}")
-    print(f"    future_ts_numeric: {data_dict['future_ts_numeric'].shape}")
     print(f"    target: {data_dict['target'].shape}")
 
     return data_dict
@@ -227,8 +232,12 @@ def build_tensors(windows_norm, patient_ids_out, split_patients_set, split_name)
 
 def main():
     print("=" * 70)
-    print("Phase 5 Data Preparation")
+    print("Phase 5 Ablation — Data Preparation (Vitals-Only)")
     print("=" * 70)
+    print("  Dropping correlation features [0-6], keeping vitals [7-10]")
+    print(f"  Historical input: (72, 5) = 4 vitals + 1 time")
+    print(f"  Target output: (24, 4) = 4 vitals")
+    print()
 
     # Load data
     features, patient_ids, seg_names, window_times = load_data()
@@ -252,21 +261,21 @@ def main():
     print(f"  Temporal gaps found: {total_gaps:,}")
     print(f"  Continuous sub-segments: {total_sub_segments:,}")
 
-    # Create sliding windows (NaN-free only)
+    # Create sliding windows (vitals-only, but same NaN filter on all 11 features)
     windows, patient_ids_out = create_sliding_windows(
         continuous_segments, features, window_times)
 
     if len(windows) == 0:
-        print("ERROR: No valid windows found! Check data.")
+        print("ERROR: No valid windows found!")
         return
 
-    # Split patients
+    # Split patients (same seed as full model → same split)
     train_patients, val_patients, test_patients = split_patients(patient_ids_out)
 
-    # Compute normalization stats from training set
+    # Compute normalization stats (vitals-only, from training set)
     means, stds = compute_norm_stats(windows, patient_ids_out, train_patients)
 
-    # Normalize all windows
+    # Normalize
     windows_norm = normalize(windows, means, stds)
 
     # Build tensors for each split
@@ -286,18 +295,12 @@ def main():
     if test_data:
         torch.save(test_data, os.path.join(OUTPUT_DIR, "test_data.pt"))
 
-    # Save normalization parameters
+    # Save normalization parameters (vitals-only)
     norm_params = {
         'means': means.tolist(),
         'stds': stds.tolist(),
-        'feature_names': [
-            'PLETH_ACDC_x_PLETH_amp', 'ABP_area_x_ABP_tau',
-            'ABP_area_x_ShockIdx', 'PLETH_amp_x_ShockIdx',
-            'PLETH_ACDC_x_ShockIdx', 'ShockIdx_x_ABP_tau',
-            'PLETH_ACDC_x_ABP_tau',
-            'ABPMean', 'PULSE', 'SpO2', 'RESP'
-        ],
-        'vital_indices': VITAL_INDICES,
+        'feature_names': VITAL_NAMES,
+        'vital_indices': [0, 1, 2, 3],  # In the 4-dim space, vitals are at [0-3]
         'vital_names': VITAL_NAMES,
     }
     with open(os.path.join(OUTPUT_DIR, "norm_params.json"), 'w') as f:
@@ -320,7 +323,9 @@ def main():
         'window_forecast': WINDOW_FORECAST,
         'stride': STRIDE,
         'expected_dt_sec': EXPECTED_DT,
-        'resolution_min': 5,
+        'ablation': 'vitals_only',
+        'input_features': 5,
+        'description': 'Vitals-only ablation: 4 vitals + 1 time (no correlation features)',
     }
     with open(os.path.join(OUTPUT_DIR, "split_info.json"), 'w') as f:
         json.dump(split_info, f, indent=2)

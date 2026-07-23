@@ -1,16 +1,17 @@
 # Project Memory — Phase 5 (Vital Sign Forecasting with Correlation Features)
 
 ## Project Overview
-Multi-variate vital sign trajectory forecasting using MIMIC-III data, enhanced with waveform-derived correlation features from the mimicEran pipeline. Predicts 24 future steps (2 hours) from 72 historical steps (6 hours) at 5-min resolution for 4 vital signs.
+Multi-variate vital sign trajectory forecasting using MIMIC-III data, enhanced with waveform-derived correlation features. Predicts 24 future steps (2 hours) from 72 historical steps (6 hours) at 5-min stride for 4 vital signs.
 
-Two models implemented and compared:
+Two models implemented and compared, plus a vitals-only ablation:
 1. **TFT** — Temporal Fusion Transformer
 2. **iTransformer** — Inverted Transformer (ICLR 2024)
+3. **Ablation** — Same models with vitals-only input (no correlations) to isolate feature contribution
 
 ### Key Difference from Phase 4.2
-- **New data source:** mimicEran merged output (11-dim vectors at 5-min stride) instead of per-patient .npy files at 15-min resolution
+- **New data source:** Waveform-derived features extracted in-house (see `data_extraction/`) at 5-min stride instead of per-patient .npy files at 15-min resolution
 - **Additional input features:** 7 correlation features from waveform analysis (capture hemodynamic coupling dynamics)
-- **Higher temporal resolution:** 5-min steps (vs 15-min in Phase 4.2) → more data points, finer dynamics
+- **Higher temporal stride:** 5-min stride (vs 15-min in Phase 4.2) → more data points, finer temporal positioning. Note: each data point summarizes a 20-min sliding window (correlations across 118 sub-windows + median of ~20 numerics samples), so individual points have 20-min context despite 5-min spacing.
 - **Input features:** 12 (7 correlations + 4 vitals + 1 time position) vs 5 in Phase 4.2
 - **Output:** Still 4 vitals × 3 quantiles (forecasting targets unchanged)
 
@@ -18,32 +19,56 @@ Two models implemented and compared:
 - Phase 4.2 achieved good results forecasting vitals from vitals alone
 - Waveform-derived correlations capture cardiovascular coupling dynamics (perfusion × shock, vascular resistance × stroke volume) that may predict future vital sign changes
 - The 7 correlation features provide physiological context that pure vital sign history cannot
+- Ablation study directly measures the added value of correlations at the same horizon/resolution
 
 ## Directory Structure
 ```
 /gpfs/home/dk5565/forecasting/phase5/
-├── tft/
-│   ├── model.py              # TFT model (same architecture as Phase 4.2)
-│   ├── preprocess.py         # Data loading from mimicEran merged output
-│   ├── prepare_data.py       # Build sequences, filter complete windows, save tensors
-│   ├── train.py              # Training loop with quantile loss
-│   ├── test.py               # Evaluation metrics
-│   ├── plot_predictions.py   # Generate forecast plots
-│   ├── prepare_data.sh       # SLURM script for data preparation (CPU)
-│   └── train.sh              # SLURM script for training + eval (GPU)
-├── iTransformer/
-│   ├── model.py              # iTransformer architecture
-│   ├── preprocess.py         # Fast data loading from pre-saved .pt files
-│   ├── train.py              # Training with quantile loss
-│   ├── test.py               # Evaluation
-│   ├── plot_predictions.py   # Visualization plots
-│   └── train.sh              # SLURM script for training + eval (GPU)
+├── data_extraction/                # Feature extraction pipeline (self-contained)
+│   ├── extract_features.py        # Main extraction: waveforms → 11-dim features
+│   ├── merge_outputs.py           # Combine parallel job outputs
+│   ├── config/
+│   │   └── pipeline_config.yaml   # All parameters (window, stride, signals, pairs)
+│   ├── slurm_extract.sh           # 50-job array (full extraction)
+│   ├── slurm_extract_missing.sh   # Re-run for failed parts
+│   ├── slurm_merge.sh             # Merge job
+│   ├── output/                    # Extraction outputs (part_XXX/ + merged/)
+│   └── README.md
+├── tft/                           # Vitals+Waveform model (12-dim input)
+│   ├── model.py                   # TFT model (rosie068/TFT-multi)
+│   ├── preprocess.py              # Data loading from .pt files
+│   ├── prepare_data.py            # Build sequences, filter, normalize, save tensors
+│   ├── train.py                   # Training loop with quantile loss
+│   ├── test.py                    # Evaluation metrics
+│   ├── plot_predictions.py        # Generate forecast plots
+│   ├── prepare_data.sh            # SLURM: data preparation (CPU)
+│   └── train.sh                   # SLURM: training + eval (GPU)
+├── iTransformer/                  # Vitals+Waveform model (12-dim input)
+│   ├── model.py                   # iTransformer architecture
+│   ├── preprocess.py              # Fast data loading from .pt files
+│   ├── train.py                   # Training with quantile loss
+│   ├── test.py                    # Evaluation
+│   ├── plot_predictions.py        # Visualization plots
+│   └── train.sh                   # SLURM: training + eval (GPU)
+├── ablation/                      # Vitals-only ablation (5-dim input)
+│   ├── prepare_data.py            # Same pipeline, drops correlations
+│   ├── prepare_data.sh            # SLURM: data preparation
+│   ├── data/processed/            # Vitals-only tensors
+│   ├── iTransformer/              # n_input_vars=5, vital_indices=[0,1,2,3]
+│   │   ├── model.py, preprocess.py, train.py, test.py, train.sh
+│   └── tft/                       # num_historical_numeric=5
+│       ├── model.py, preprocess.py, train.py, test.py, train.sh
+├── phase5_data/processed/         # Vitals+Waveform tensors (generated by tft/prepare_data.py)
 ├── README.md
-├── CLAUDE.md                 # This file
+├── CLAUDE.md                      # This file
 └── .gitignore
 ```
 
-## Feature Vector (11-dim input from mimicEran)
+## Feature Vector (11-dim input from data_extraction)
+
+Each data point is extracted from a **20-minute sliding window** advancing at a **5-minute stride**. Within each 20-min window:
+- **Correlations [0-6]:** Pearson r computed across ~118 sub-windows (30s duration, 10s stride) between pairs of beat-by-beat waveform-derived features (extracted from II, PLETH, RESP, ABP at 125 Hz).
+- **Vitals [7-10]:** Median of ~20 numerics samples (bedside monitor, ~1 sample/min) within the 20-min window.
 
 | Index | Feature | Source | Description |
 |-------|---------|--------|-------------|
@@ -62,21 +87,33 @@ Two models implemented and compared:
 ## Data Source & Processing
 
 ### Source
-- **Raw merged data:** `/gpfs/home/dk5565/mimicEran/output/merged/`
+- **Raw waveforms:** `/gpfs/data/eh3828lab/datasets/mimic3_waveforms_matched`
+- **Clinical (for alignment):** `/gpfs/data/eh3828lab/datasets/mimic_clinical`
+- **Extraction pipeline:** `/gpfs/home/dk5565/forecasting/phase5/data_extraction/`
+- **Merged data:** `/gpfs/home/dk5565/forecasting/phase5/data_extraction/output/merged/`
   - `features.npy` — (N, 11) all windows
   - `patient_ids.npy` — (N,) patient identifiers
   - `seg_names.npy` — (N,) segment identifiers
-  - `window_times.npy` — (N,) timestamps (seconds)
+  - `window_times.npy` — (N,) timestamps in seconds (offset from segment start)
 - **Processed tensors:** `/gpfs/home/dk5565/forecasting/phase5/phase5_data/processed/`
 
-### Processing Pipeline
-1. Load merged arrays from mimicEran output
+### Extraction Pipeline (data_extraction/)
+1. Scan MIMIC-III waveform records for patients with all 4 channels (II, PLETH, RESP, ABP)
+2. For each qualifying segment, slide a 20-min window at 5-min stride
+3. Within each window: compute 19 beat-by-beat features across 118 sub-windows (30s, 10s stride)
+4. Compute 7 Pearson correlations between selected feature pairs
+5. Read numerics records for vital signs (median over 20-min window)
+6. Output: (N, 11) features per extraction part
+7. Merge all parts → single dataset
+
+### Forecasting Data Preparation (tft/prepare_data.py)
+1. Load merged arrays (1.15M+ windows × 11 features)
 2. Group windows by (patient_id, seg_name) → continuous time series per segment
 3. Sort each segment by window_time
-4. Verify temporal continuity (5-min stride = 300s between consecutive windows)
+4. **Split at temporal gaps:** Within each (patient, segment) group, detect where consecutive windows are NOT exactly 300s apart → split into continuous sub-segments
 5. Form sliding windows: 96 steps total (72 input + 24 output), stride=12
 6. **Filter:** Only keep windows with zero NaN across all 96 steps × 11 features
-7. Split by patient (80/10/10, seed=42)
+7. Split by patient (70/15/15, seed=42)
 8. Z-score normalize all 11 features using training set statistics
 9. Save tensors to .pt files
 
@@ -87,14 +124,14 @@ Two models implemented and compared:
 | Output window | 24 steps (2 hours) | Clinically useful forecast horizon |
 | Total window | 96 steps (8 hours) | Requires 8h continuous monitoring |
 | Stride | 12 steps (1 hour) | Balance between sample count and overlap |
-| Resolution | 5 minutes | Native mimicEran output stride |
+| Data point spacing | 5 minutes | Extraction pipeline output stride (each point = 20-min window summary) |
 
 ### Input Features
 | Feature | Channels | Description |
 |---------|----------|-------------|
 | Correlations (0-6) | 7 | Waveform-derived Pearson correlations |
 | Vitals (7-10) | 4 | ABPMean, PULSE, SpO2, RESP |
-| Time position | 1 | Linearly spaced [0, 1] |
+| Time position | 1 | History: linspace [0, 0.75], Future: linspace [0.76, 1.0] |
 | **Total input** | **12** | |
 
 ### Output
@@ -158,16 +195,42 @@ Output:
 }
 ```
 
+## Vitals-Only Comparison
+
+### Purpose
+Isolate the contribution of waveform correlation features by comparing vitals+waveform (12-dim input) vs vitals-only (5-dim input) at the exact same horizon/resolution/split.
+
+### Design
+| | Vitals+Waveform | Vitals-Only |
+|---|---|---|
+| Input | (72, 12) = 7 corr + 4 vitals + 1 time | (72, 5) = 4 vitals + 1 time |
+| Windows | Same (NaN filter on all 11 features) | Same |
+| Patient split | Same (seed=42, 70/15/15) | Same |
+| Target | (24, 4) = 4 vitals | Same |
+| Hyperparams | Same per model type | Same |
+
+### Key Design Decision
+The ablation filters NaN on all 11 features (not just the 4 vitals) to ensure the **exact same windows** are used. This way, any performance difference is attributable solely to the correlation features, not to a different training set.
+
+### Vitals-Only Config
+```python
+# iTransformer vitals-only
+{'n_input_vars': 5, 'n_vars': 4, 'vital_indices': [0, 1, 2, 3]}  # 1.6M params
+
+# TFT vitals-only
+{'num_historical_numeric': 5}  # 6.2M params
+```
+
 ## Training
 - **Optimizer:** Adam
 - **TFT:** LR=1e-3, grad clip max_norm=100
-- **iTransformer:** LR=1e-4, grad clip max_norm=1.0
+- **iTransformer:** LR=1e-4, grad clip max_norm=1.0, cosine annealing scheduler
 - **Early stopping:** Patience 20 on val loss
 - **Batch size:** 64
 - **Epochs:** 100 (default)
 - **Loss:** Quantile loss (pinball), no masking
 
-## Metrics (same as Phase 4.2)
+## Metrics
 - Per-vital MAE, MAPE per quantile (q0.1, q0.5, q0.9)
 - Calibration: % of true values within 10th–90th prediction interval (target: 80%)
 - Correlation: Pearson r on median predictions
@@ -175,85 +238,138 @@ Output:
 
 ## SLURM
 
-### Data preparation (prepare_data.sh)
-- Partition: cpu_medium (or cpu_short)
-- Resources: 8 CPUs, 32GB RAM
-- Job: Load mimicEran merged → build sequences → filter complete → save tensors
+### Data extraction (data_extraction/)
+- **Full extraction:** `sbatch slurm_extract.sh` — 50-job array, cpu_short, 8h, 32GB, 4 CPUs
+- **Missing parts:** `sbatch slurm_extract_missing.sh` — array=[0,1,3,4,5,6], cpu_medium, 12h, 48GB, 8 CPUs
+- **Merge:** `sbatch slurm_merge.sh` — single job, cpu_short, 30min
 
-### Model training (train.sh)
-- Partition: gpu4_medium
-- Resources: 1 GPU, 8 CPUs, 64GB RAM, 6hr limit
-- Runs: train.py → test.py → plot_predictions.py
+### Data preparation
+- **Vitals+Waveform:** `cd tft && sbatch prepare_data.sh` — cpu_short, 1h, 32GB
+- **Vitals-only:** `cd ablation && sbatch prepare_data.sh` — cpu_short, 1h, 32GB
+
+### Model training
+- **Vitals+Waveform TFT:** `cd tft && sbatch train.sh` — gpu4_medium, 6h
+- **Vitals+Waveform iTransformer:** `cd iTransformer && sbatch train.sh` — gpu4_medium, 6h
+- **Vitals-only TFT:** `cd ablation/tft && sbatch train.sh` — gpu4_medium, 6h
+- **Vitals-only iTransformer:** `cd ablation/iTransformer && sbatch train.sh` — gpu4_medium, 6h
 
 ### Environment
-- Conda env: CSDI (Python 3.11, PyTorch)
-- Activation: `source /gpfs/share/apps/anaconda3/gpu/2023.09/etc/profile.d/conda.sh && conda activate CSDI`
+- Extraction: `/gpfs/home/dk5565/.conda/envs/CSDI` (numpy, scipy, wfdb, pyyaml)
+- Training: CSDI via `source /gpfs/share/apps/anaconda3/gpu/2023.09/etc/profile.d/conda.sh && conda activate CSDI`
 
 ## Key Paths
-- **mimicEran merged data:** `/gpfs/home/dk5565/mimicEran/output/merged/`
-- **Processed tensors:** `/gpfs/home/dk5565/forecasting/phase5/phase5_data/processed/`
-- **Phase 4.2 (comparison):** `/gpfs/home/dk5565/forecasting/phase42/`
+- **Raw waveforms:** `/gpfs/data/eh3828lab/datasets/mimic3_waveforms_matched`
+- **Extraction output:** `/gpfs/home/dk5565/forecasting/phase5/data_extraction/output/`
+- **Merged data:** `/gpfs/home/dk5565/forecasting/phase5/data_extraction/output/merged/`
+- **Vitals+Waveform tensors:** `/gpfs/home/dk5565/forecasting/phase5/phase5_data/processed/`
+- **Vitals-only tensors:** `/gpfs/home/dk5565/forecasting/phase5/ablation/data/processed/`
 
-## Expected Data Scale
-From mimicEran analysis (~1.35M total windows, 73% fully complete):
-- ~900 patients with ≥1 valid 8h continuous sequence
-- ~145k forecast samples (8h sequences with all vitals present)
-- Train: ~100k, Val: ~22k, Test: ~22k (70/15/15 by patient)
+## Data Scale
+- ~2,060 qualifying patients (need II + PLETH + RESP + ABP simultaneously)
+- ~1.15M windows extracted (from 44/50 parts)
+- ~15k forecast-ready samples after NaN filtering and windowing
+- Train: ~10.9k, Val: ~2.3k, Test: ~2.2k (70/15/15 by patient)
 
 ## Results
 
-### Current Run (42/50 extraction parts merged)
-- Train: 10,917 windows (562 patients)
-- Val: 2,318 windows (120 patients)
-- Test: 2,191 windows (121 patients)
+### Current Run (44/50 extraction parts merged)
+- Train: 8,599 windows (563 patients)
+- Val: 1,832 windows (121 patients)
+- Test: 2,486 windows (124 patients)
 
-### Overall Performance
+### Overall Performance (Vitals+Waveform)
 
 | Model | MAE | RMSE |
 |-------|-----|------|
-| iTransformer | **3.18** | **5.37** |
-| TFT | 3.28 | 5.48 |
+| iTransformer | **3.08** | **5.46** |
+| TFT | 3.23 | 5.63 |
 
-### iTransformer Per-Vital
-
-| Vital | MAE | RMSE | Correlation | Calibration |
-|-------|-----|------|-------------|-------------|
-| ABPMean | 5.68 mmHg | 8.04 | 0.850 | 77.9% |
-| PULSE | 4.11 bpm | 6.42 | 0.930 | 79.7% |
-| SpO2 | 0.89% | 2.41 | 0.795 | 78.7% |
-| RESP | 2.05 br/min | 3.47 | 0.812 | 78.0% |
-
-### TFT Per-Vital
+### iTransformer Per-Vital (Vitals+Waveform)
 
 | Vital | MAE | RMSE | Correlation | Calibration |
 |-------|-----|------|-------------|-------------|
-| ABPMean | 5.86 mmHg | 8.23 | 0.844 | 80.2% |
-| PULSE | 4.25 bpm | 6.58 | 0.928 | 78.2% |
-| SpO2 | 0.93% | 2.53 | 0.790 | 79.9% |
-| RESP | 2.08 br/min | 3.54 | 0.812 | 80.3% |
+| ABPMean | 5.35 mmHg | 7.85 | 0.888 | 78.4% |
+| PULSE | 3.79 bpm | 6.60 | 0.915 | 82.0% |
+| SpO2 | 0.88% | 2.41 | 0.799 | 79.2% |
+| RESP | 2.30 br/min | 3.47 | 0.807 | 75.8% |
+
+### TFT Per-Vital (Vitals+Waveform)
+
+| Vital | MAE | RMSE | Correlation | Calibration |
+|-------|-----|------|-------------|-------------|
+| ABPMean | 5.63 mmHg | 8.03 | 0.879 | 80.0% |
+| PULSE | 4.00 bpm | 6.78 | 0.908 | 87.2% |
+| SpO2 | 0.93% | 2.53 | 0.788 | 79.8% |
+| RESP | 2.36 br/min | 3.72 | 0.802 | 77.1% |
+
+### Vitals-Only Results
+Test set: 2,486 windows (same windows as vitals+waveform).
+
+**iTransformer (Vitals-Only):**
+
+| Vital | MAE | RMSE | Correlation | Calibration |
+|-------|-----|------|-------------|-------------|
+| ABPMean | 5.42 mmHg | 7.85 | 0.886 | 77.9% |
+| PULSE | 3.85 bpm | 6.60 | 0.913 | 81.9% |
+| SpO2 | 0.89% | 1.50 | 0.800 | 78.5% |
+| RESP | 2.31 br/min | 3.72 | 0.807 | 76.2% |
+| **Overall** | **3.12** | **5.51** | — | — |
+
+**TFT (Vitals-Only):**
+
+| Vital | MAE | RMSE | Correlation | Calibration |
+|-------|-----|------|-------------|-------------|
+| ABPMean | 5.59 mmHg | 7.96 | 0.884 | 78.7% |
+| PULSE | 4.20 bpm | 7.00 | 0.906 | 83.0% |
+| SpO2 | 0.99% | 1.60 | 0.784 | 84.0% |
+| RESP | 2.34 br/min | 3.72 | 0.806 | 75.5% |
+| **Overall** | **3.28** | **5.67** | — | — |
+
+### Vitals+Waveform vs Vitals-Only Summary
+
+| Model | V+W MAE | Vitals-Only MAE | Δ | Conclusion |
+|-------|---------|-----------------|---|------------|
+| iTransformer | **3.08** | 3.12 | +1.3% | Correlations provide minimal benefit |
+| TFT | **3.23** | 3.28 | +1.5% | Correlations provide minimal benefit |
+
+**Key finding:** Waveform correlation features provide only ~1–1.5% MAE improvement. The vast majority of predictive power comes from vital sign history alone at this 6h→2h horizon.
 
 ### Comparison with Phase 4.2
 
 | Metric | Phase 4.2 (iTransformer) | Phase 5 (iTransformer) | Change |
 |--------|--------------------------|------------------------|--------|
-| Overall MAE | 4.09 | **3.18** | -22% |
-| Mean BP correlation | 0.791 | **0.850** | +7.5% |
-| Pulse correlation | 0.862 | **0.930** | +7.9% |
-| SpO2 correlation | 0.704 | **0.795** | +12.9% |
-| Resp correlation | 0.764 | **0.812** | +6.3% |
-| Mean calibration | 76.4% | **78.6%** | +2.2pp |
+| Overall MAE | 4.13 | **3.08** | -25% |
+| Mean BP correlation | 0.788 | **0.888** | +12.7% |
+| Pulse correlation | 0.870 | **0.915** | +5.2% |
+| SpO2 correlation | 0.708 | **0.799** | +12.9% |
+| Resp correlation | 0.802 | **0.807** | +0.6% |
+| Mean calibration | 78.8% | **78.9%** | +0.1pp |
 
-**Key findings:**
-- Correlation features provide substantial predictive value (+6–13% correlation improvement)
-- Calibration improved across all vitals (especially TFT: 70%→80%)
-- Both models benefit equally from the richer input
-- iTransformer still slightly outperforms TFT overall
+**⚠️ Important caveat:** Phase 5 has a shorter forecast horizon (2h vs 6.25h) AND finer data spacing (5-min vs 15-min), so the comparison is NOT apples-to-apples. The vitals-only comparison (same horizon, with vs without correlations) confirms that most improvement comes from the easier task, not the correlation features (+1.3% only).
 
-**⚠️ Important caveat:** Phase 5 has a shorter forecast horizon (2h vs 6.25h) AND higher temporal resolution (5-min vs 15-min), so the comparison is NOT apples-to-apples. Lower MAE and higher correlations are partially expected from the easier task alone. A controlled experiment on the same data/horizon is still needed to isolate the contribution of correlation features.
+## Pipeline (Full Reproduction)
 
-### TODO
-- [ ] Run ablation: train Phase 5 architecture with vitals-only input (drop correlations) to measure the true added value of waveform features at the same horizon/resolution
-- [ ] Re-run with full merged data (all 50 extraction parts) for more training samples
+```bash
+# 1. Extract features from raw waveforms (50 parallel jobs, ~2-8h each)
+cd data_extraction && sbatch slurm_extract.sh
+
+# 2. Merge extraction outputs
+sbatch slurm_merge.sh
+
+# 3. Prepare full model tensors
+cd ../tft && sbatch prepare_data.sh
+
+# 4. Prepare ablation tensors
+cd ../ablation && sbatch prepare_data.sh
+
+# 5. Train full models
+cd ../tft && sbatch train.sh
+cd ../iTransformer && sbatch train.sh
+
+# 6. Train ablation models
+cd ../ablation/iTransformer && sbatch train.sh
+cd ../ablation/tft && sbatch train.sh
+```
 
 ## Git
-- .gitignore excludes: phase5_data/, checkpoints/, outputs/, logs/, __pycache__/, *.npy, *.pt, *.pyc
+- .gitignore excludes: phase5_data/, data_extraction/output/, ablation/data/, checkpoints/, outputs/, logs/, __pycache__/, *.npy, *.pt, *.pyc

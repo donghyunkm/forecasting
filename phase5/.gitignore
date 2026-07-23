@@ -1,4 +1,7 @@
 phase5_data/
+data_extraction/output/
+data_extraction/logs/
+ablation/data/
 checkpoints/
 outputs/
 logs/

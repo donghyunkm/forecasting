@@ -1,0 +1,84 @@
+# Feature extraction pipeline configuration
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Window parameters
+window:
+  duration_min: 20          # Length of extraction window (minutes)
+  stride_min: 5             # Stride between consecutive windows (minutes)
+
+# Waveform data paths (MIMIC-III matched waveforms)
+paths:
+  waveforms_dir: /gpfs/data/eh3828lab/datasets/mimic3_waveforms_matched
+  clinical_dir: /gpfs/data/eh3828lab/datasets/mimic_clinical
+  output_dir: /gpfs/home/dk5565/forecasting/phase5/data_extraction/output
+
+# Waveform signals required for correlation features
+waveform_signals:
+  required: ["II", "PLETH", "RESP", "ABP"]
+  sampling_rate: 125        # Hz
+
+# The 19 statistical features computed from waveform sub-windows
+# (from the existing pipeline). Used for correlation pair computation.
+feature_names:
+  - HR
+  - RR
+  - SBP
+  - DBP
+  - PP
+  - MAP
+  - ABP_area
+  - PLETH_ACDC
+  - PLETH_amp
+  - ECG_Ramp
+  - HRV_RMSSD
+  - HR_range
+  - ShockIdx
+  - PPV
+  - PVI
+  - PTT
+  - dPdt_max
+  - ABP_tau
+  - RESP_amp
+
+# 7 correlation pairs (from Phase 2.5 / Phase 3 analysis)
+# Each pair is a Pearson r computed across sub-windows within the extraction window.
+correlation_pairs:
+  - [PLETH_ACDC, PLETH_amp]
+  - [ABP_area, ABP_tau]
+  - [ABP_area, ShockIdx]
+  - [PLETH_amp, ShockIdx]
+  - [PLETH_ACDC, ShockIdx]
+  - [ShockIdx, ABP_tau]
+  - [PLETH_ACDC, ABP_tau]
+
+# Vital signs extracted from numerics records
+# These are bedside monitor parameters (low-rate: ~1 sample/min)
+vital_signs:
+  signals:
+    - name: ABPMean        # Mean arterial blood pressure (mmHg)
+      fallback: NBPMean    # Use non-invasive BP if ABP unavailable
+    - name: PULSE          # Pulse rate (bpm)
+      fallback: HR         # Heart rate from ECG
+    - name: SpO2           # Oxygen saturation (%)
+      fallback: null
+    - name: RESP           # Respiratory rate (breaths/min)
+      fallback: null
+  # Aggregation method for vital signs within each window
+  aggregation: median      # median | mean
+
+# Sub-window parameters for computing correlation features from waveforms
+subwindow:
+  duration_sec: 30         # Sub-window length for feature computation
+  stride_sec: 10           # Stride between sub-windows
+
+# Quality filters
+quality:
+  min_segment_duration_min: 20  # Segments shorter than this are skipped
+  max_nan_fraction: 0.10        # Max NaN fraction per channel before rejection
+  min_corr_samples: 5           # Min valid sub-windows needed to compute a correlation
+
+# Processing
+processing:
+  max_windows_per_patient: null    # No cap — extract all available windows
+  random_seed: 42
+  num_jobs: 50                  # Number of parallel jobs for SLURM array
