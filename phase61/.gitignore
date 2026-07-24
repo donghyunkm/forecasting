@@ -1,0 +1,8 @@
+phase61_data/
+checkpoints/
+outputs/
+logs/
+__pycache__/
+*.npy
+*.pt
+*.pyc
