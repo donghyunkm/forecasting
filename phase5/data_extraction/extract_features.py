@@ -784,6 +784,10 @@ def main():
                         help="Job index for SLURM array (0-based)")
     parser.add_argument("--num-jobs", type=int, default=None,
                         help="Total number of parallel jobs")
+    parser.add_argument("--patient-file", type=str, default=None,
+                        help="Path to a text file listing patient IDs to process (one per line)")
+    parser.add_argument("--output-suffix", type=str, default=None,
+                        help="Suffix appended to the output part directory (e.g. '_sub_003')")
     args = parser.parse_args()
 
     # Load config
@@ -806,7 +810,16 @@ def main():
     patient_ids_sorted = sorted(patient_segs.keys())
 
     # Slice for parallel processing
-    if args.job_idx is not None and args.num_jobs is not None:
+    if args.patient_file is not None:
+        # Load explicit patient list from file
+        with open(args.patient_file) as f:
+            requested = [line.strip() for line in f if line.strip()]
+        # Keep only patients that exist in the scanned set
+        patients_slice = [p for p in requested if p in patient_segs]
+        job_idx = args.job_idx if args.job_idx is not None else 0
+        print(f"\n  Patient file: {args.patient_file}")
+        print(f"  Processing {len(patients_slice)} patients (from {len(requested)} requested)")
+    elif args.job_idx is not None and args.num_jobs is not None:
         job_idx = args.job_idx
         num_jobs = args.num_jobs
         # Distribute patients across jobs
@@ -834,7 +847,10 @@ def main():
     # Save outputs
     output_dir = Path(cfg["paths"]["output_dir"])
     if args.job_idx is not None:
-        part_dir = output_dir / f"part_{job_idx:03d}"
+        part_name = f"part_{job_idx:03d}"
+        if args.output_suffix:
+            part_name += args.output_suffix
+        part_dir = output_dir / part_name
     else:
         part_dir = output_dir
     part_dir.mkdir(parents=True, exist_ok=True)

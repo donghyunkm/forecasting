@@ -266,86 +266,96 @@ The ablation filters NaN on all 11 features (not just the 4 vitals) to ensure th
 
 ## Data Scale
 - ~2,060 qualifying patients (need II + PLETH + RESP + ABP simultaneously)
-- ~1.15M windows extracted (from 44/50 parts)
+- ~1.43M windows extracted (all 50 parts)
 - ~15k forecast-ready samples after NaN filtering and windowing
-- Train: ~10.9k, Val: ~2.3k, Test: ~2.2k (70/15/15 by patient)
+- Test: 2,886 windows (split 70/15/15 by patient)
 
 ## Results
 
-### Current Run (44/50 extraction parts merged)
-- Train: 8,599 windows (563 patients)
-- Val: 1,832 windows (121 patients)
-- Test: 2,486 windows (124 patients)
+### Current Run (all 50 extraction parts merged)
+- Total: 1,432,407 windows from 2,060 patients
+- Test: 2,886 windows
 
 ### Overall Performance (Vitals+Waveform)
 
 | Model | MAE | RMSE |
 |-------|-----|------|
-| iTransformer | **3.08** | **5.46** |
-| TFT | 3.23 | 5.63 |
+| iTransformer | **3.12** | **5.86** |
+| TFT | 3.23 | 5.90 |
 
 ### iTransformer Per-Vital (Vitals+Waveform)
 
 | Vital | MAE | RMSE | Correlation | Calibration |
 |-------|-----|------|-------------|-------------|
-| ABPMean | 5.35 mmHg | 7.85 | 0.888 | 78.4% |
-| PULSE | 3.79 bpm | 6.60 | 0.915 | 82.0% |
-| SpO2 | 0.88% | 2.41 | 0.799 | 79.2% |
-| RESP | 2.30 br/min | 3.47 | 0.807 | 75.8% |
+| ABPMean | 5.12 mmHg | 7.62 | 0.831 | 79.1% |
+| PULSE | 4.41 bpm | 8.11 | 0.897 | 80.0% |
+| SpO2 | 0.83% | 1.44 | 0.861 | 80.5% |
+| RESP | 2.11 br/min | 3.39 | 0.834 | 77.3% |
 
 ### TFT Per-Vital (Vitals+Waveform)
 
 | Vital | MAE | RMSE | Correlation | Calibration |
 |-------|-----|------|-------------|-------------|
-| ABPMean | 5.63 mmHg | 8.03 | 0.879 | 80.0% |
-| PULSE | 4.00 bpm | 6.78 | 0.908 | 87.2% |
-| SpO2 | 0.93% | 2.53 | 0.788 | 79.8% |
-| RESP | 2.36 br/min | 3.72 | 0.802 | 77.1% |
+| ABPMean | 5.24 mmHg | 7.74 | 0.826 | 83.0% |
+| PULSE | 4.62 bpm | 8.15 | 0.896 | 75.9% |
+| SpO2 | 0.88% | 1.44 | 0.863 | 80.9% |
+| RESP | 2.18 br/min | 3.45 | 0.829 | 76.6% |
 
 ### Vitals-Only Results
-Test set: 2,486 windows (same windows as vitals+waveform).
+Test set: 2,886 windows (same windows as vitals+waveform).
 
 **iTransformer (Vitals-Only):**
 
 | Vital | MAE | RMSE | Correlation | Calibration |
 |-------|-----|------|-------------|-------------|
-| ABPMean | 5.42 mmHg | 7.85 | 0.886 | 77.9% |
-| PULSE | 3.85 bpm | 6.60 | 0.913 | 81.9% |
-| SpO2 | 0.89% | 1.50 | 0.800 | 78.5% |
-| RESP | 2.31 br/min | 3.72 | 0.807 | 76.2% |
-| **Overall** | **3.12** | **5.51** | — | — |
+| ABPMean | 5.12 mmHg | 7.62 | 0.830 | 80.4% |
+| PULSE | 4.41 bpm | 8.07 | 0.897 | 81.8% |
+| SpO2 | 0.84% | 1.45 | 0.859 | 80.4% |
+| RESP | 2.10 br/min | 3.38 | 0.833 | 79.2% |
+| **Overall** | **3.11** | **5.84** | — | — |
 
 **TFT (Vitals-Only):**
 
 | Vital | MAE | RMSE | Correlation | Calibration |
 |-------|-----|------|-------------|-------------|
-| ABPMean | 5.59 mmHg | 7.96 | 0.884 | 78.7% |
-| PULSE | 4.20 bpm | 7.00 | 0.906 | 83.0% |
-| SpO2 | 0.99% | 1.60 | 0.784 | 84.0% |
-| RESP | 2.34 br/min | 3.72 | 0.806 | 75.5% |
-| **Overall** | **3.28** | **5.67** | — | — |
+| ABPMean | 5.30 mmHg | 7.74 | 0.826 | 84.6% |
+| PULSE | 4.69 bpm | 8.32 | 0.891 | 81.7% |
+| SpO2 | 0.86% | 1.42 | 0.865 | 83.0% |
+| RESP | 2.17 br/min | 3.43 | 0.828 | 80.5% |
+| **Overall** | **3.26** | **5.98** | — | — |
 
 ### Vitals+Waveform vs Vitals-Only Summary
 
 | Model | V+W MAE | Vitals-Only MAE | Δ | Conclusion |
 |-------|---------|-----------------|---|------------|
-| iTransformer | **3.08** | 3.12 | +1.3% | Correlations provide minimal benefit |
-| TFT | **3.23** | 3.28 | +1.5% | Correlations provide minimal benefit |
+| iTransformer | 3.12 | **3.11** | -0.3% | Correlations provide no benefit |
+| TFT | **3.23** | 3.26 | +0.9% | Correlations provide negligible benefit |
 
-**Key finding:** Waveform correlation features provide only ~1–1.5% MAE improvement. The vast majority of predictive power comes from vital sign history alone at this 6h→2h horizon.
+**Key finding:** With the complete dataset (all 2,060 patients), waveform correlation features provide **no meaningful benefit**. The iTransformer vitals-only model actually slightly outperforms the vitals+waveform variant. The vast majority of predictive power comes from vital sign history alone at this 6h→2h horizon.
 
 ### Comparison with Phase 4.2
 
 | Metric | Phase 4.2 (iTransformer) | Phase 5 (iTransformer) | Change |
 |--------|--------------------------|------------------------|--------|
-| Overall MAE | 4.13 | **3.08** | -25% |
-| Mean BP correlation | 0.788 | **0.888** | +12.7% |
-| Pulse correlation | 0.870 | **0.915** | +5.2% |
-| SpO2 correlation | 0.708 | **0.799** | +12.9% |
-| Resp correlation | 0.802 | **0.807** | +0.6% |
-| Mean calibration | 78.8% | **78.9%** | +0.1pp |
+| Overall MAE | 4.13 | **3.12** | -24% |
+| Mean BP correlation | 0.788 | **0.831** | +5.5% |
+| Pulse correlation | 0.870 | **0.897** | +3.1% |
+| SpO2 correlation | 0.708 | **0.861** | +21.6% |
+| Resp correlation | 0.802 | **0.834** | +4.0% |
+| Mean calibration | 78.8% | **79.2%** | +0.4pp |
 
-**⚠️ Important caveat:** Phase 5 has a shorter forecast horizon (2h vs 6.25h) AND finer data spacing (5-min vs 15-min), so the comparison is NOT apples-to-apples. The vitals-only comparison (same horizon, with vs without correlations) confirms that most improvement comes from the easier task, not the correlation features (+1.3% only).
+**⚠️ Important caveat:** Phase 5 has a shorter forecast horizon (2h vs 6.25h) AND finer data spacing (5-min vs 15-min), so the comparison is NOT apples-to-apples. The vitals-only comparison (same horizon, with vs without correlations) confirms that the improvement comes from the easier task, not the correlation features.
+
+## TODO
+
+All extraction and training steps are complete. The full pipeline has been run with all 50 parts (2,060 patients).
+
+- ✅ Extract features (50 parts)
+- ✅ Merge sub-job outputs for part_001 (8 sub-jobs → part_001)
+- ✅ Full merge (50/50 parts → 1,432,407 windows, 2,060 patients)
+- ✅ Prepare data (vitals+waveform and vitals-only)
+- ✅ Train and evaluate all 4 model variants
+- ⬜ Re-run statistical significance tests on new results (optional — correlations provide no benefit)
 
 ## Pipeline (Full Reproduction)
 

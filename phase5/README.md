@@ -8,76 +8,71 @@
 - **6h→2h forecast** (vs 18.75h→6.25h) — shorter but more clinically actionable
 - **Vitals-only baseline** — same models with vitals-only input (no correlations) to isolate correlation feature contribution
 
-## Results (44/50 extraction parts, 2,486 test samples)
+## Results (50/50 extraction parts, 2,886 test samples, 2,060 patients)
 
 ### Vitals+Waveform (12-dim input: 7 correlations + 4 vitals + time)
 
 | Model | Overall MAE | Overall RMSE |
 |-------|-------------|--------------|
-| iTransformer | **3.08** | **5.46** |
-| TFT | 3.23 | 5.63 |
+| iTransformer | **3.12** | **5.86** |
+| TFT | 3.23 | 5.90 |
 
 ### iTransformer Per-Vital (Vitals+Waveform)
 
 | Vital | MAE | Correlation | Calibration |
 |-------|-----|-------------|-------------|
-| ABPMean | 5.35 mmHg | 0.888 | 78.4% |
-| PULSE | 3.79 bpm | 0.915 | 82.0% |
-| SpO2 | 0.88% | 0.799 | 79.2% |
-| RESP | 2.30 br/min | 0.807 | 75.8% |
+| ABPMean | 5.12 mmHg | 0.831 | 79.1% |
+| PULSE | 4.41 bpm | 0.897 | 80.0% |
+| SpO2 | 0.83% | 0.861 | 80.5% |
+| RESP | 2.11 br/min | 0.834 | 77.3% |
+
+### TFT Per-Vital (Vitals+Waveform)
+
+| Vital | MAE | Correlation | Calibration |
+|-------|-----|-------------|-------------|
+| ABPMean | 5.24 mmHg | 0.826 | 83.0% |
+| PULSE | 4.62 bpm | 0.896 | 75.9% |
+| SpO2 | 0.88% | 0.863 | 80.9% |
+| RESP | 2.18 br/min | 0.829 | 76.6% |
 
 ### Vitals+Waveform vs Vitals-Only
 
 **iTransformer:**
 
-| Vital | V+W MAE | Vitals-Only MAE | Δ MAE | V+W Corr | Vitals-Only Corr | Δ Corr |
-|-------|----------|--------------|-------|-----------|---------------|--------|
-| ABPMean | **5.35** | 5.42 | +1.3% | **0.888** | 0.886 | -0.2% |
-| PULSE | **3.79** | 3.85 | +1.6% | **0.915** | 0.913 | -0.2% |
-| SpO2 | **0.88** | 0.89 | +1.1% | 0.799 | **0.800** | +0.1% |
-| RESP | **2.30** | 2.31 | +0.4% | **0.807** | 0.807 | 0% |
-| **Overall** | **3.08** | 3.12 | +1.3% | — | — | — |
-
-| Vital | V+W Calib | Vitals-Only Calib |
-|-------|------------|----------------|
-| ABPMean | 78.4% | **77.9%** |
-| PULSE | 82.0% | **81.9%** |
-| SpO2 | 79.2% | **78.5%** |
-| RESP | 75.8% | **76.2%** |
+| Vital | V+W MAE | Vitals-Only MAE | Δ MAE |
+|-------|----------|--------------|-------|
+| ABPMean | 5.12 | 5.12 | 0% |
+| PULSE | 4.41 | 4.41 | 0% |
+| SpO2 | 0.83 | 0.84 | +1.2% |
+| RESP | 2.11 | 2.10 | -0.5% |
+| **Overall** | 3.12 | **3.11** | -0.3% |
 
 **TFT:**
 
-| Vital | V+W MAE | Vitals-Only MAE | Δ MAE | V+W Corr | Vitals-Only Corr | Δ Corr |
-|-------|----------|--------------|-------|-----------|---------------|--------|
-| ABPMean | 5.63 | **5.59** | -0.7% | 0.879 | **0.884** | +0.6% |
-| PULSE | **4.00** | 4.20 | +5.0% | **0.908** | 0.906 | -0.2% |
-| SpO2 | **0.93** | 0.99 | +6.5% | **0.788** | 0.784 | -0.5% |
-| RESP | 2.36 | **2.34** | -0.9% | 0.802 | **0.806** | +0.5% |
-| **Overall** | **3.23** | 3.28 | +1.5% | — | — | — |
-
-| Vital | V+W Calib | Vitals-Only Calib |
-|-------|------------|----------------|
-| ABPMean | **80.0%** | 78.7% |
-| PULSE | **87.2%** | 83.0% |
-| SpO2 | 79.8% | **84.0%** |
-| RESP | 77.1% | **75.5%** |
+| Vital | V+W MAE | Vitals-Only MAE | Δ MAE |
+|-------|----------|--------------|-------|
+| ABPMean | **5.24** | 5.30 | +1.1% |
+| PULSE | **4.62** | 4.69 | +1.5% |
+| SpO2 | 0.88 | **0.86** | -2.3% |
+| RESP | 2.18 | **2.17** | -0.5% |
+| **Overall** | **3.23** | 3.26 | +0.9% |
 
 **Summary:**
 
-| Model | V+W (12-dim) MAE | Vitals-Only (5-dim) MAE | Improvement from correlations |
-|-------|--------------------|-----------------------|-------------------------------|
-| iTransformer | **3.08** | 3.12 | 1.3% |
-| TFT | **3.23** | 3.28 | 1.5% |
+| Model | V+W (12-dim) MAE | Vitals-Only (5-dim) MAE | Δ |
+|-------|--------------------|-----------------------|---|
+| iTransformer | 3.12 | **3.11** | -0.3% (vitals-only better) |
+| TFT | **3.23** | 3.26 | +0.9% |
 
-**Key finding:** Waveform correlation features provide only ~1–1.5% MAE improvement. The vast majority of predictive power comes from vital sign history alone at this 6h→2h horizon. The correlations help most for PULSE and SpO2 in the TFT model (+5–6.5%), but are negligible for the iTransformer.
+**Key finding:** With the complete dataset (all 2,060 patients), waveform correlation features provide **no meaningful benefit**. The iTransformer vitals-only model actually slightly outperforms the vitals+waveform variant. TFT shows <1% improvement from correlations. The vast majority of predictive power comes from vital sign history alone at this 6h→2h horizon.
 
 ### vs Phase 4.2
 
 | Metric | Phase 4.2 (iTransformer) | Phase 5 (iTransformer) | Δ |
 |--------|--------------------------|------------------------|---|
-| Overall MAE | 4.13 | **3.08** | -25% |
-| Correlation (mean) | 0.792 | **0.852** | +7.6% |
-| Calibration (mean) | 78.8% | **78.9%** | +0.1pp |
+| Overall MAE | 4.13 | **3.12** | -24% |
+| Correlation (mean) | 0.792 | **0.856** | +8.1% |
+| Calibration (mean) | 78.8% | **79.2%** | +0.4pp |
 
 **⚠️ Caveat:** Phase 5 uses a shorter forecast horizon (2h vs 6.25h) and finer stride (5-min vs 15-min). Most of the improvement is attributable to the easier forecasting task, not the correlation features (as confirmed by the ablation).
 
@@ -93,7 +88,7 @@
 
 **Processing:** Group by patient/segment → sort by time → split at temporal gaps → sliding windows (96 steps = 72 input + 24 output) → discard windows with any NaN → split by patient (70/15/15) → normalize → save tensors
 
-**Current dataset (44 parts):** 1,225,024 raw windows from 1,808 patients → Train 8,599 / Val 1,832 / Test 2,486 forecast windows
+**Current dataset (50 parts):** 1,432,407 raw windows from 2,060 patients → Train/Val/Test forecast windows (70/15/15 by patient)
 
 ## Quick Start
 
